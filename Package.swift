@@ -29,4 +29,14 @@ let package = Package(
 package.targets.first { $0.name == "Aki" }?.exclude = [
     "App", "Codenotch", "History", "Localization", "Marking", "Settings", "Sidebar",
 ]
+// `aki mark`'s overlay (GTK 4 on X11), its own executable: `aki` stays without GTK and
+// runs where libgtk-4-1 isn't installed; `aki mark` execs the `aki-mark` beside it.
+package.products.append(.executable(name: "aki-mark", targets: ["AkiLinux"]))
+package.targets.append(contentsOf: [
+    .systemLibrary(name: "CGtk", pkgConfig: "gtk4", providers: [.apt(["libgtk-4-dev"])]),
+    .systemLibrary(name: "CX11", pkgConfig: "x11", providers: [.apt(["libx11-dev"])]),
+    // Swift 5 mode: GTK's C callbacks run on the GLib loop's thread, which Swift 6 can't see as the main actor.
+    .executableTarget(name: "AkiLinux", dependencies: ["AkiCore", "CGtk", "CX11"],
+        swiftSettings: [.swiftLanguageMode(.v5)]),
+])
 #endif

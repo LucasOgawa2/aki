@@ -49,8 +49,9 @@ jobs:
         with:
           persist-credentials: false
       # The checks ask lsof which address the server listens on; ps lists the agents.
+      # GTK 4 and Xlib (headers and pkg-config) build aki-mark; nothing here needs a display.
       - name: Tools
-        run: apt-get update && apt-get install -y --no-install-recommends lsof procps
+        run: apt-get update && apt-get install -y --no-install-recommends lsof procps libgtk-4-dev libx11-dev pkg-config
       - name: Toolchain
         run: swift --version
       - name: Build
