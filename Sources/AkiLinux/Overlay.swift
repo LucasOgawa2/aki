@@ -13,6 +13,7 @@ final class Overlay {
     private let gdkMonitors: [UnsafeMutableRawPointer]
     private let app: UnsafeMutableRawPointer
     private let reader: TextReader?
+    private let pages: PageReading?
     private var screens: [Screen] = []
     private var built = false
     private var closed = false
@@ -49,13 +50,14 @@ final class Overlay {
     }
 
     init(app: UnsafeMutableRawPointer, capture: Capture, monitors: [(LinuxMarking.Monitor, UnsafeMutableRawPointer)],
-         sessions: [AgentTerminal], reader: TextReader?) {
+         sessions: [AgentTerminal], reader: TextReader?, pages: PageReading?) {
         self.app = app
         self.reader = reader
+        self.pages = pages
         self.capture = capture
         self.monitors = monitors.map(\.0)
         gdkMonitors = monitors.map(\.1)
-        state = LinuxMarking.OverlayState(sessions: sessions, readsText: reader != nil)
+        state = LinuxMarking.OverlayState(sessions: sessions, readsText: reader != nil, readsPage: pages != nil && capture.window != nil)
     }
 
     /// GtkApplication's `activate`: the first builds the windows, later ones (the
@@ -82,10 +84,21 @@ final class Overlay {
         switch effect {
         case .close?: close()
         case let .send(marks, destination)?: send(marks, to: destination)
-        case let .enrich(mark)?:
+        case let .enrich(mark, sources)?:
             // From the end of the drag: usually read before Ctrl+Enter.
-            reader?.read(mark, capture: capture, monitors: monitors) { [weak self] text in
-                self?.dispatch(.enriched(id: mark.id, .init(text: text)))
+            if sources.contains(.text) {
+                reader?.read(mark, capture: capture, monitors: monitors) { [weak self] text in
+                    self?.dispatch(.enriched(id: mark.id, source: .text, .init(text: text)))
+                }
+            }
+            if sources.contains(.page) {
+                if let pages, let window = capture.window {
+                    pages.read(mark, window: window, title: capture.app?.window, monitors: monitors) { [weak self] read in
+                        self?.dispatch(.enriched(id: mark.id, source: .page, .init(url: read.url, element: read.element)))
+                    }
+                } else {
+                    dispatch(.enriched(id: mark.id, source: .page, .init()))
+                }
             }
         case let .wait(token)?:
             // As the Mac: a send waits for the reads up to 3 s, then goes with what it has.
@@ -128,7 +141,9 @@ final class Overlay {
         let to = LinuxMarking.devicePoint(.init(x: start.from.x / scale + dx, y: start.from.y / scale + dy), on: monitors[screen])
         if ended {
             drag = nil
-            dispatch(.pointer(screen: screen, from: start.from, to: to, app: capture.app))
+            let rect = LinuxMarking.OverlayState.rect(from: start.from, to: to)
+            let onBrowser = LinuxMarking.isOnBrowser(rect, on: monitors[screen], window: capture.window?.geometry.rect, appName: capture.app?.name)
+            dispatch(.pointer(screen: screen, from: start.from, to: to, app: capture.app, onBrowser: onBrowser))
         } else {
             drag = (screen, start.from, to)
             gtk_widget_queue_draw(typed(screens[screen].area))
@@ -317,7 +332,7 @@ final class Overlay {
         let count = state.marks.count
         var parts = [count == 0 ? "Click a point or drag an area" : (count == 1 ? "1 mark" : "\(count) marks")]
         if state.waitingForReads {
-            parts.append("Reading text…")
+            parts.append(state.marks.contains { state.pendingSources($0.id).contains(.page) } ? "Reading the page…" : "Reading text…")
         } else if state.sending {
             parts.append("Sending…")
         } else if state.sessions.isEmpty {
@@ -351,8 +366,10 @@ final class Overlay {
                 let current = gtk_editable_get_text(OpaquePointer(screen.entry)).map { String(cString: $0) } ?? ""
                 if current != state.draft { gtk_editable_set_text(OpaquePointer(screen.entry), state.draft) }
                 gtk_widget_set_sensitive(typed(screen.entry), state.sending ? 0 : 1)
-                let read = state.isPending(mark.id) ? "Reading text…"
+                let reading = state.pendingSources(mark.id)
+                let read = reading.contains(.text) ? "Reading text…" : reading.contains(.page) ? "Reading the page…"
                     : mark.selectedText.map { "Text: " + ($0.split(whereSeparator: \.isNewline).first.map(String.init) ?? "") }
+                    ?? mark.element.map { "Element: " + $0.path }
                 gtk_label_set_text(typed(screen.cardText), read ?? "")
                 gtk_widget_set_visible(typed(screen.cardText), read == nil ? 0 : 1)
                 gtk_widget_set_visible(typed(screen.card), 1)

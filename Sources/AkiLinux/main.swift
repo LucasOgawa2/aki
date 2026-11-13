@@ -19,6 +19,12 @@ if CommandLine.arguments.dropFirst().first == "--probe-capture" {
     do {
         let c = try Capture.take()
         print("capture \(c.layout.width)x\(c.layout.height) bpp \(c.layout.bitsPerPixel) app \(c.app.map { "\($0.name ?? "-") / \($0.window ?? "-")" } ?? "none")")
+        if let w = c.window {
+            let r = w.geometry.rect
+            print("window 0x\(String(w.xid, radix: 16)) at \(Int(r.x)),\(Int(r.y)) \(Int(r.width))x\(Int(r.height)) extents \(w.geometry.extents.map { "\($0.map(Int.init))" } ?? "none")")
+        } else {
+            print("window none")
+        }
         for (name, x) in [("left", 0), ("right", c.layout.width / 2)] {
             let crop = LinuxMarking.PixelRect(x: x, y: 0, width: c.layout.width / 2, height: c.layout.height)
             let rgb = LinuxMarking.rgb(of: c.bytes, layout: c.layout, crop: crop) ?? []
@@ -81,10 +87,14 @@ guard !monitors.isEmpty else { fail("GTK sees no monitor") }
 let reader = TextReader(environment: environment)
 if reader == nil { FileHandle.standardError.write(Data("aki-mark: no tesseract (apt install tesseract-ocr): marks go without text\n".utf8)) }
 reader?.prepare()
-let overlay = Overlay(app: app, capture: capture, monitors: monitors, sessions: LinuxMarking.sessions { AgentSessions.terminals() }, reader: reader)
+// The page under a mark on Chrome, through its DevTools (AKI_CDP_URL, 127.0.0.1 only).
+let pages = PageReading(environment: environment)
+let overlay = Overlay(app: app, capture: capture, monitors: monitors, sessions: LinuxMarking.sessions { AgentSessions.terminals() }, reader: reader,
+                      pages: pages)
 onSignal(app, "activate") { overlay.activate() }
 let status = g_application_run(typed(app), argc, CommandLine.unsafeArgv)
 // The windows off the screen first, then any read still going ends and cleans up.
 gdk_display_flush(gdk_display_get_default())
 reader?.finish()
+pages?.finish()
 exit(status)

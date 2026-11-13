@@ -64,6 +64,14 @@ extension LinuxMarking {
         /// Under this, from press to release, a click (as `MarkingView`'s `hypot < 5`).
         public static let clickSlop = 5.0
 
+        /// The mark a press and a release make: a point where it was pressed, or the area between.
+        public static func rect(from: Point, to: Point) -> Rect {
+            let moved = ((to.x - from.x) * (to.x - from.x) + (to.y - from.y) * (to.y - from.y)).squareRoot()
+            return moved < clickSlop
+                ? Rect(x: from.x, y: from.y, width: 0, height: 0)
+                : Rect(x: min(from.x, to.x), y: min(from.y, to.y), width: abs(to.x - from.x), height: abs(to.y - from.y))
+        }
+
         public enum Event: Equatable, Sendable {
             /// `onBrowser`: the mark (a point, an area's centre) is in the active window, a browser's.
             case pointer(screen: Int, from: Point, to: Point, app: AppInfo?, onBrowser: Bool = false)
@@ -111,10 +119,7 @@ extension LinuxMarking {
             case let .pointer(screen, from, to, app, onBrowser):
                 // Not while the marks go (as on the Mac).
                 guard !sending else { return nil }
-                let moved = ((to.x - from.x) * (to.x - from.x) + (to.y - from.y) * (to.y - from.y)).squareRoot()
-                let rect = moved < Self.clickSlop
-                    ? Rect(x: from.x, y: from.y, width: 0, height: 0)
-                    : Rect(x: min(from.x, to.x), y: min(from.y, to.y), width: abs(to.x - from.x), height: abs(to.y - from.y))
+                let rect = Self.rect(from: from, to: to)
                 commitDraft()
                 let mark = PortableMark(screen: screen, rect: rect, number: marks.count + 1, app: app)
                 marks.append(mark)
