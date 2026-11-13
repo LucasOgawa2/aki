@@ -4,7 +4,7 @@ import AppKit
 #endif
 import Foundation
 
-let usage = """
+var usage = """
     aki \(Aki.version) — point at anything on screen, your coding agent reads it.
 
     usage:
@@ -22,6 +22,13 @@ let usage = """
 
     The worktree is the git root of the current folder (override with AKI_WORKTREE).
     """
+
+#if os(Linux)
+usage = usage.replacingOccurrences(
+    of: "  aki app                         open the app (sidebar + server)",
+    with: "  aki terminals                   individual agent sessions running now\n  aki recent                      conversations from the last seven days"
+).replacingOccurrences(of: "on this Mac", with: "on this machine")
+#endif
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("aki: \(message)\n".utf8))
