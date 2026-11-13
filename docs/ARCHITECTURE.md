@@ -32,8 +32,10 @@ flowchart LR
 | `AkiCore` | Everything without UI: the store, the local HTTP server and API, the client the CLI and MCP use, finding agent sessions. Testable. | — |
 | `Aki` | The app *and* the `aki` command (same binary: `main.swift` picks by its arguments). | `AkiCore`, Sparkle |
 | `AkiChecks` | The checks, as an executable (`swift run AkiChecks`) — no Xcode needed. | `AkiCore` |
+| `AkiLinux` | Linux only: `aki-mark`, the marking overlay (GTK 4 on X11): the capture, one window per monitor, saving and delivering through `AkiCore`'s `LinuxMarking`. `aki mark` execs it, so `aki` never links GTK. Swift 5 mode: GTK's C callbacks run on GLib's loop, which Swift 6 can't see as the main actor. | `AkiCore`, `CGtk`, `CX11` |
+| `CGtk`, `CX11` | Linux only: GTK 4 and Xlib as system modules (pkg-config `gtk4`, `x11`), with a `shim.h` each for what Swift can't call (the variadic JPEG save). Only `CX11` includes Xlib. | — |
 
-On Linux the package builds `AkiCore`, the `aki` command (`main.swift` and `MCP/`, no app) and `AkiChecks`; swift-crypto stands in for CryptoKit there. Sparkle and the app never enter its build.
+On Linux the package builds `AkiCore`, the `aki` command (`main.swift` and `MCP/`, no app), `aki-mark` (`AkiLinux`) and `AkiChecks`; swift-crypto stands in for CryptoKit there. Sparkle and the app never enter its build.
 The `#if os(Linux)` in `Package.swift` selects sources for the build host; cross-compilation (for example, `--swift-sdk` targeting Linux from a Mac) is not supported.
 
 ## Where things live
@@ -47,6 +49,10 @@ Sources/
     Server/                HTTPServer (127.0.0.1), HTTP parsing, AkiAPI (routes, token, Host/Origin checks)
     Client/                AkiClient (CLI/MCP → server), Waiter (aki wait), AnnotationText (what the agent reads)
     Sessions/              AgentSessions (claude/codex processes → sessions), ClaudeSessions, ClaudeStatus, Worktree, ProcFS (Linux)
+    Marking/               Linux marking without UI: LinuxMarking (fields, crop, X11 pixels, monitors, window names), OverlayState,
+                           DeliveryPolicy, OrcaDelivery (orca-ide, AKI_DRY_DELIVER), GnomeShortcut
+  AkiLinux/                aki-mark (Linux): Capture (X11), Overlay (GTK 4 windows), GLib (signal and idle helpers)
+  CGtk/, CX11/             GTK 4 and Xlib system modules
   Aki/
     main.swift             entry: the app, or the aki command (list, wait, done, mcp, serve…)
     App/                   AppDelegate, menu bar, Updates (Sparkle), TerminalJump (Orca), TerminalApps, AkiBrand

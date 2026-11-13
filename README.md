@@ -215,7 +215,9 @@ swift run AkiChecks   # checks
 python3 scripts/check-translations.py   # every language complete, no repeated text
 ```
 
-On Linux, only the core and the `aki` command build for now (no app, no marking): `swift build`, then `swift run AkiChecks`. `aki list`, `wait`, `show`, `done`, `delete`, `sessions`, `terminals`, `recent`, `usage`, `mcp`, `serve`, `move-to-mark-folders` and `--version` work. Running the CLI requires `ps` (procps). Process details, open logs and listening ports come from `/proc`; `lsof` is only needed to run `AkiChecks`.
+On Linux there's no app yet: the core, the `aki` command and `aki-mark` (the marking overlay) build with `swift build`, then `swift run AkiChecks`. Building needs GTK 4's and Xlib's headers (`libgtk-4-dev libx11-dev pkg-config` on Ubuntu). `aki list`, `wait`, `show`, `done`, `delete`, `sessions`, `terminals`, `recent`, `usage`, `mcp`, `serve`, `move-to-mark-folders` and `--version` work. Running the CLI requires `ps` (procps). Process details, open logs and listening ports come from `/proc`; `lsof` is only needed to run `AkiChecks`.
+
+On Linux, `aki mark` marks the screen (GNOME on X11; not Wayland yet): it freezes every monitor, you click a point or drag an area, write what the agent should do (Enter queues it, Ctrl+Enter sends the round, Esc steps back), and Tab, Shift+Tab or Ctrl+1…9 pick the session. The marks are saved and their message typed into that session's Orca tab. `aki mark` runs the `aki-mark` beside it, so install both from the same build; `aki-mark` needs `libgtk-4-1` at run time, `aki` doesn't. `aki shortcut install` sets GNOME's Shift+Super+A to `aki mark` (`aki shortcut remove` takes it out). The agent reads the marks with `aki list` / `aki show`, which need `aki serve` running.
 
 On Linux, `aki usage` shows Codex limits and Claude tokens/cost; Claude's 5-hour and weekly limits appear only if something outside Aki writes `~/.aki/status/<session>.json` or an app named Claude has left its cache in `$XDG_CONFIG_HOME/Claude/Cache/Cache_Data` (`~/.config/Claude/Cache/Cache_Data` when that variable is unset or not an absolute path).
 

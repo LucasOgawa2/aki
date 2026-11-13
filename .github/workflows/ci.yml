@@ -63,6 +63,9 @@ jobs:
         run: |
           swift run aki --version
           swift run aki
+          # aki-mark with no display: says so and exits 1 (no window, nothing captured).
+          if swift run aki-mark 2> aki-mark.err; then exit 1; fi
+          grep -q "no DISPLAY" aki-mark.err && rm aki-mark.err
       - name: Verify clean working tree
         # If Package.resolved changes, run swift package resolve and commit the file.
         run: |
