@@ -191,6 +191,110 @@ lsof.waitUntilExit()
 let listening = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 check(listening.contains("127.0.0.1:\(port)") && !listening.contains("*:\(port)"), "listens on 127.0.0.1 only")
 #if os(Linux)
+// Real sockets exercise connection scheduling and time limits without URLSession pooling.
+func connectClient(to port: UInt16) -> Int32 {
+    let client = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+    guard client >= 0 else { return -1 }
+    var timeout = timeval(tv_sec: 3, tv_usec: 0)
+    guard setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
+          setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+        close(client)
+        return -1
+    }
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = UInt32(INADDR_LOOPBACK).bigEndian
+    let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    guard connected == 0 else { close(client); return -1 }
+    return client
+}
+
+func sendRequest(_ request: String, on client: Int32) -> Bool {
+    let bytes = Array(request.utf8)
+    return bytes.withUnsafeBytes { raw in
+        var offset = 0
+        while offset < raw.count {
+            let count = Glibc.send(client, raw.baseAddress! + offset, raw.count - offset, Int32(MSG_NOSIGNAL))
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { return false }
+            offset += count
+        }
+        return true
+    }
+}
+
+do {
+    let idleServer = HTTPServer(port: 0) { await netAPI.handle($0) }
+    let idlePort = try await idleServer.start()
+    var clients: [Int32] = []
+    defer {
+        for client in clients { close(client) }
+        idleServer.stop()
+    }
+    var sent = true
+    for _ in 0..<40 {
+        let client = connectClient(to: idlePort)
+        if client >= 0 { clients.append(client) }
+        sent = sendRequest("GET /health HTTP/1.1\r\nHost: localhost\r\n", on: client) && sent
+    }
+    let health = connectClient(to: idlePort)
+    if health >= 0 { clients.append(health) }
+    let started = ProcessInfo.processInfo.systemUptime
+    sent = sendRequest("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n", on: health) && sent
+    var reply = [UInt8](repeating: 0, count: 4096)
+    let count = recv(health, &reply, reply.count, 0)
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    check(sent && clients.count == 41 && count > 0 && String(decoding: reply.prefix(max(0, count)), as: UTF8.self).hasPrefix("HTTP/1.1 200 ") && elapsed < 1,
+          "health responds within one second with 40 idle connections (\(elapsed) s)")
+}
+
+do {
+    let slowServer = HTTPServer(port: 0, requestTimeout: 1) { _ in HTTPResponse(status: 200) }
+    let slowPort = try await slowServer.start()
+    let client = connectClient(to: slowPort)
+    defer {
+        if client >= 0 { close(client) }
+        slowServer.stop()
+    }
+    let started = ProcessInfo.processInfo.systemUptime
+    var received = -1
+    var byte: UInt8 = 0
+    for character in "GET /health HTTP/1.1".prefix(12) {
+        _ = sendRequest(String(character), on: client)
+        usleep(300_000)
+        received = recv(client, &byte, 1, Int32(MSG_DONTWAIT))
+        if received == 0 { break }
+    }
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    check(client >= 0 && received == 0 && elapsed >= 0.8 && elapsed < 3,
+          "trickling header reaches EOF at the total request deadline (\(elapsed) s)")
+}
+
+do {
+    let cappedServer = HTTPServer(port: 0) { _ in HTTPResponse(status: 200) }
+    let cappedPort = try await cappedServer.start()
+    var clients: [Int32] = []
+    defer {
+        for client in clients { close(client) }
+        cappedServer.stop()
+    }
+    for _ in 0..<64 {
+        let client = connectClient(to: cappedPort)
+        if client >= 0 { clients.append(client) }
+    }
+    let extra = connectClient(to: cappedPort)
+    if extra >= 0 { clients.append(extra) }
+    let started = ProcessInfo.processInfo.systemUptime
+    var byte: UInt8 = 0
+    let received = recv(extra, &byte, 1, 0)
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    check(clients.count == 65 && received == 0 && elapsed < 0.5,
+          "65th idle connection reaches EOF within half a second (\(elapsed) s)")
+}
+
 // Send well beyond one server read before reading the rejection, like an upload client.
 func oversizedUploadReply() -> (sent: Bool, response: String, readError: Int32) {
     let client = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)

@@ -13,15 +13,18 @@ public final class HTTPServer: @unchecked Sendable {
 
     private let requestedPort: UInt16
     private let maxBody: Int
+    private let requestTimeout: TimeInterval
     private let handler: Handler
-    // Guards `listening`: the accept thread and `stop` both touch it.
+    // Guards the listener and the number of active connection threads.
     private let lock = NSLock()
     private var listening: Int32 = -1
+    private var activeConnections = 0
 
-    /// `port` 0 picks a free port (used by the checks).
-    public init(port: UInt16, maxBody: Int = 25 * 1024 * 1024, handler: @escaping Handler) {
+    /// `port` 0 picks a free port; `requestTimeout` bounds the full request read from accept.
+    public init(port: UInt16, maxBody: Int = 25 * 1024 * 1024, requestTimeout: TimeInterval = 10, handler: @escaping Handler) {
         requestedPort = port
         self.maxBody = maxBody
+        self.requestTimeout = requestTimeout
         self.handler = handler
     }
 
@@ -96,12 +99,25 @@ public final class HTTPServer: @unchecked Sendable {
             // This toolchain's Glibc module does not expose accept4.
             let connection = accept(fd, nil, nil)
             if connection >= 0 {
+                let deadline = ProcessInfo.processInfo.systemUptime + requestTimeout
                 guard fcntl(connection, F_SETFD, FD_CLOEXEC) == 0,
-                      lock.withLock({ listening == fd }) else {
+                      lock.withLock({
+                          guard listening == fd, activeConnections < 64 else { return false }
+                          activeConnections += 1
+                          return true
+                      }) else {
                     close(connection)
                     continue
                 }
-                DispatchQueue.global().async { [self] in serve(connection) }
+                let thread = Thread { [self] in
+                    defer {
+                        close(connection)
+                        lock.withLock { activeConnections -= 1 }
+                    }
+                    serve(connection, deadline: deadline)
+                }
+                thread.name = "aki.http.connection"
+                thread.start()
                 continue
             }
             let failure = errno
@@ -116,34 +132,40 @@ public final class HTTPServer: @unchecked Sendable {
         }
     }
 
-    private func serve(_ connection: Int32) {
-        // A client that stops sending mid-request doesn't hold its thread for good.
+    private func serve(_ connection: Int32, deadline: TimeInterval) {
+        // Sending keeps a socket timeout; reading has one total deadline from accept.
         var timeout = timeval(tv_sec: 30, tv_usec: 0)
-        guard setsockopt(connection, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
-              setsockopt(connection, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
-            close(connection)
+        guard setsockopt(connection, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
             return
         }
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let count = chunk.withUnsafeMutableBytes { recv(connection, $0.baseAddress, $0.count, 0) }
-            if count < 0, errno == EINTR { continue }
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { return }
+            let milliseconds = Int32(min(remaining * 1000, Double(Int32.max)).rounded(.up))
+            var descriptor = pollfd(fd: connection, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, milliseconds)
+            if ready < 0, errno == EINTR { continue }
+            guard ready > 0, ProcessInfo.processInfo.systemUptime < deadline else { return }
+            let count = chunk.withUnsafeMutableBytes { recv(connection, $0.baseAddress, $0.count, Int32(MSG_DONTWAIT)) }
+            if count < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
             if count > 0 { buffer.append(contentsOf: chunk[0..<count]) }
             switch HTTPRequest.parse(buffer, maxBody: maxBody) {
             case .complete(let request):
                 let handler = handler
+                let completed = DispatchSemaphore(value: 0)
+                let result = ResponseBox()
                 Task {
-                    let response = await handler(request)
-                    DispatchQueue.global().async {
-                        Self.send(response, on: connection)
-                    }
+                    result.store(await handler(request))
+                    completed.signal()
                 }
+                completed.wait()
+                Self.send(result.load(), on: connection)
                 return
             case .incomplete where count > 0:
                 continue
             case .incomplete:
-                close(connection)
                 return
             case .invalid(let status, let reason):
                 Self.send(.error(status, reason), on: connection, drainUpload: true)
@@ -152,8 +174,15 @@ public final class HTTPServer: @unchecked Sendable {
         }
     }
 
+    private final class ResponseBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var response: HTTPResponse?
+
+        func store(_ response: HTTPResponse) { lock.withLock { self.response = response } }
+        func load() -> HTTPResponse { lock.withLock { response! } }
+    }
+
     private static func send(_ response: HTTPResponse, on connection: Int32, drainUpload: Bool = false) {
-        defer { close(connection) }
         let data = response.serialized()
         data.withUnsafeBytes { raw in
             var offset = 0
@@ -183,7 +212,7 @@ public final class HTTPServer: @unchecked Sendable {
             let ready = poll(&descriptor, 1, milliseconds)
             if ready < 0, errno == EINTR { continue }
             guard ready > 0 else { return }
-            // Never inherit the request's 30-second receive timeout after poll.
+            // Keep draining nonblocking after poll.
             let count = recv(connection, &chunk, chunk.count, Int32(MSG_DONTWAIT))
             if count < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
             guard count > 0 else { return }
