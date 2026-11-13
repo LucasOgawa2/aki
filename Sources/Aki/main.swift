@@ -28,7 +28,7 @@ let usage = {
     return text.replacingOccurrences(
         of: "  aki app                         open the app (sidebar + server)",
         with: "  aki terminals                   individual agent sessions running now\n  aki recent                      conversations from the last seven days"
-            + "\n  aki shortcut install|remove     GNOME's Shift+Super+A for aki mark\n  aki mark                        mark the screen for an agent (next: not available yet)"
+            + "\n  aki shortcut install|remove     GNOME's Shift+Super+A for aki mark\n  aki mark                        mark the screen for an agent"
     ).replacingOccurrences(of: "on this Mac", with: "on this machine")
     #else
     return text
@@ -225,7 +225,15 @@ do {
         fail("\(arguments[0]) is not available on Linux yet")
 
     case "mark":
-        fail("aki mark is not available on Linux yet")
+        // The overlay is GTK's, in its own executable beside this one: `aki` runs without GTK.
+        guard arguments.count == 1 else { fail("usage: aki mark") }
+        guard let executable = LinuxMarking.currentExecutable() else { fail("can't tell where this aki is (/proc/self/exe)") }
+        let marker = LinuxMarking.sibling("aki-mark", of: executable)
+        guard FileManager.default.isExecutableFile(atPath: marker) else {
+            fail("aki mark needs aki-mark next to this aki (\(marker)): install both from the same build")
+        }
+        execv(marker, [strdup(marker), nil])
+        fail("couldn't start \(marker): \(String(cString: strerror(errno)))")
 
     case "shortcut":
         // GNOME's custom shortcut for `aki mark` (no other desktop yet).
