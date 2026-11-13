@@ -215,6 +215,8 @@ swift run AkiChecks   # checks
 python3 scripts/check-translations.py   # every language complete, no repeated text
 ```
 
+On Linux, only the core and the `aki` command build for now (no app, no marking): `swift build`, then `swift run AkiChecks`. `aki list`, `wait`, `show`, `done`, `sessions`, `recent`, `usage`, `mcp` and `serve` work; `lsof` tells which worktree serves a localhost page.
+
 How it's built: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · how to help: [CONTRIBUTING.md](CONTRIBUTING.md) · what changed: [CHANGELOG.md](CHANGELOG.md) · security reports: [SECURITY.md](SECURITY.md).
 
 <details>

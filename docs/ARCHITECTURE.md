@@ -33,6 +33,8 @@ flowchart LR
 | `Aki` | The app *and* the `aki` command (same binary: `main.swift` picks by its arguments). | `AkiCore`, Sparkle |
 | `AkiChecks` | The checks, as an executable (`swift run AkiChecks`) — no Xcode needed. | `AkiCore` |
 
+On Linux the package builds `AkiCore`, the `aki` command (`main.swift` and `MCP/`, no app) and `AkiChecks`; swift-crypto stands in for CryptoKit there. Sparkle and the app never enter its build.
+
 ## Where things live
 
 ```
@@ -43,7 +45,7 @@ Sources/
     Store/                 AnnotationStore (marks on disk, locked), DiskUsage (cleanup)
     Server/                HTTPServer (127.0.0.1), HTTP parsing, AkiAPI (routes, token, Host/Origin checks)
     Client/                AkiClient (CLI/MCP → server), Waiter (aki wait), AnnotationText (what the agent reads)
-    Sessions/              AgentSessions (claude/codex processes → sessions), ClaudeSessions, ClaudeStatus, Worktree
+    Sessions/              AgentSessions (claude/codex processes → sessions), ClaudeSessions, ClaudeStatus, Worktree, ProcFS (Linux)
   Aki/
     main.swift             entry: the app, or the aki command (list, wait, done, mcp, serve…)
     App/                   AppDelegate, menu bar, Updates (Sparkle), TerminalJump (Orca), TerminalApps, AkiBrand
@@ -71,4 +73,5 @@ brand/                     logos, tokens, fonts
 - **Texts in English in the code**, `L10n.t("…")`, one dictionary per language — a repeated key crashes the app, so `scripts/check-translations.py` guards it.
 - **The store is a JSON file**, locked across processes; each write reads the file fresh under the lock.
 - **Delivery goes only to Orca tabs** (by the tab handle Orca puts in the process environment); in other terminals the agent picks marks up itself (`aki wait` / MCP).
+- **Linux is `#if os(macOS)` away**: macOS keeps its own calls as they were; Linux reads processes from `/proc` (`ProcFS`, parent, start, folder, Orca handle), serves on plain sockets (`HTTPServer+POSIX`) and sees no desktop apps of Claude or Codex.
 - **Security**: see [SECURITY.md](../SECURITY.md).
