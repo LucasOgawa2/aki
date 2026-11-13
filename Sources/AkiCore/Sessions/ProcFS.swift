@@ -64,6 +64,7 @@ public struct ProcFS: Sendable {
                 guard local.count == 2, let port = UInt16(local[1], radix: 16) else { continue }
                 let hex = String(local[0])
                 let address: String
+                // This hex decoding assumes a little-endian host; the kernel writes in native byte order.
                 if family == "IPv4", hex.count == 8, let value = UInt32(hex, radix: 16) {
                     address = value == 0 ? "*" : (0..<4).map { String((value >> ($0 * 8)) & 255) }.joined(separator: ".")
                 } else if family == "IPv6", hex.count == 32 {
