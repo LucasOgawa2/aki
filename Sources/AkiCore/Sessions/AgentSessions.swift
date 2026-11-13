@@ -259,6 +259,7 @@ public enum AgentSessions {
     /// Each process's folder, asked of the kernel directly (an `lsof` per pass cost
     /// more than everything else the sidebar does).
     static func workingDirectories(of pids: [Int32]) -> [Int32: String] {
+        #if os(macOS)
         var result: [Int32: String] = [:]
         for pid in pids {
             var info = proc_vnodepathinfo()
@@ -270,6 +271,12 @@ public enum AgentSessions {
             if !path.isEmpty { result[pid] = path }
         }
         return result
+        #else
+        let proc = ProcFS()
+        var result: [Int32: String] = [:]
+        for pid in pids { result[pid] = proc.cwd(of: pid) }
+        return result
+        #endif
     }
 
     nonisolated(unsafe) private static var branches = [String: (name: String?, at: Date)]()
@@ -315,12 +322,18 @@ public enum AgentSessions {
     }
 
     private static func terminalHandle(of pid: Int32) -> String? {
+        #if os(macOS)
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0, size <= 4 * 1024 * 1024 else { return nil }
         var bytes = [UInt8](repeating: 0, count: size)
         guard sysctl(&mib, 3, &bytes, &size, nil, 0) == 0 else { return nil }
         return terminalHandle(inProcessArguments: Data(bytes.prefix(size)))
+        #else
+        // Only the environment: a prompt in the arguments naming a handle is not an identity.
+        let handle = ProcFS().environment(of: pid)?["ORCA_TERMINAL_HANDLE"]
+        return handle?.isEmpty == false ? handle : nil
+        #endif
     }
 
     static func run(_ path: String, _ arguments: [String]) -> String {

@@ -586,5 +586,39 @@ check(AgentTerminal.keptInSight(resting: night, shown: 0, minimum: 0).isEmpty, "
 try? FileManager.default.removeItem(at: claudeHistory)
 try? FileManager.default.removeItem(at: codexHistory)
 
+// MARK: Processes on Linux (/proc, read from a folder laid out like it)
+
+print("proc")
+let proc = temp.appending(path: "proc")
+func fakeProcess(_ pid: Int32, comm: String, parent: Int32, startTicks: Int = 0) throws {
+    let folder = proc.appending(path: "\(pid)")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data("\(pid) (\(comm)) S \(parent) 1 1 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 \(startTicks) 1000 100\n".utf8)
+        .write(to: folder.appending(path: "stat"))
+}
+try fakeProcess(4242, comm: "node", parent: 77)
+try fakeProcess(4243, comm: "tmux: a) (b", parent: 4242)
+let procFS = ProcFS(root: proc)
+check(procFS.parent(of: 4242) == 77, "a process's parent")
+check(procFS.parent(of: 4243) == 4242, "a name with spaces and parentheses doesn't shift the fields")
+check(procFS.parent(of: 9999) == nil, "no parent for a process that's gone")
+try Data("cpu  1 2 3\nbtime 1794527844\nprocesses 9\n".utf8).write(to: proc.appending(path: "stat"))
+try fakeProcess(4244, comm: "claude", parent: 1, startTicks: 94_203)
+check(ProcFS(root: proc, ticksPerSecond: 100).started(4244).map { abs($0.timeIntervalSince1970 - 1_794_528_786.03) < 0.001 } == true,
+      "when a process started: boot time plus its start in clock ticks")
+check(procFS.started(9999) == nil, "no start for a process that's gone")
+try FileManager.default.createSymbolicLink(atPath: proc.appending(path: "4242/cwd").path, withDestinationPath: "/repo/wt")
+check(procFS.cwd(of: 4242) == "/repo/wt", "a process's folder")
+check(procFS.cwd(of: 4243) == nil, "none when it can't be read")
+try Data("PATH=/bin\0ORCA_TERMINAL_HANDLE=term_1\0QUERY=a=b\0".utf8).write(to: proc.appending(path: "4242/environ"))
+check(procFS.environment(of: 4242)?["ORCA_TERMINAL_HANDLE"] == "term_1", "a process's environment")
+check(procFS.environment(of: 4242)?["QUERY"] == "a=b", "a value keeps its own =")
+check(procFS.environment(of: 4243) == nil, "none when it can't be read")
+#if os(Linux)
+check(ProcFS().parent(of: getpid()) == getppid(), "this process's parent, from the real /proc")
+check(ProcFS().cwd(of: getpid()) == FileManager.default.currentDirectoryPath, "and its folder")
+check(ProcFS().environment(of: getpid())?["PATH"] == ProcessInfo.processInfo.environment["PATH"], "and its environment")
+#endif
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)
