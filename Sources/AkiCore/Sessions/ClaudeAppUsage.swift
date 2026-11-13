@@ -6,8 +6,16 @@ import Foundation
 /// HTTP cache (Chromium's Simple Cache, the body zstd-compressed). Only that entry is
 /// read, never another page's. Approach from Codenotch (MIT, see LICENSE).
 public enum ClaudeAppUsage {
+    #if os(macOS)
     public static let directory = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Library/Application Support/Claude/Cache/Cache_Data")
+    #else
+    // Where an Electron app named Claude keeps its cache on Linux (XDG config folder).
+    public static let directory = (ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap {
+        $0.isEmpty ? nil : URL(filePath: $0)
+    } ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: ".config"))
+        .appending(path: "Claude/Cache/Cache_Data")
+    #endif
 
     /// The newest usage answer in the cache, or nil (no app, nothing cached yet).
     public static func read(directory: URL = directory) -> UsageLimits? {

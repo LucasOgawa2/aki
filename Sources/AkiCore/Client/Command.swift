@@ -4,6 +4,13 @@ import Foundation
 /// iCloud is still downloading, `lsof` on a stalled disk, an Orca updating, a slow
 /// `.zshrc`) is stopped and counts as failed, so it never holds up the sidebar or a send.
 public enum Command {
+    /// Where `lsof` is: macOS keeps it in /usr/sbin, Linux distributions in /usr/bin.
+    #if os(macOS)
+    public static let lsof = "/usr/sbin/lsof"
+    #else
+    public static let lsof = "/usr/bin/lsof"
+    #endif
+
     /// Its output when it ends well in time (exit 0), else nil. `anyEnd`: whatever it
     /// printed however it ended (`lsof` ends in error when one of the processes asked
     /// about is gone, and still lists the others').

@@ -552,7 +552,13 @@ public final class TokenLedger: @unchecked Sendable {
     static func has(_ line: Data.SubSequence, _ needle: Data) -> Bool {
         line.withUnsafeBytes { hay in
             needle.withUnsafeBytes { n in
-                memmem(hay.baseAddress, hay.count, n.baseAddress, n.count) != nil
+                #if os(macOS)
+                return memmem(hay.baseAddress, hay.count, n.baseAddress, n.count) != nil
+                #else
+                // Glibc's memmem takes no null pointers (an empty line has none).
+                guard let start = hay.baseAddress, let wanted = n.baseAddress else { return false }
+                return memmem(start, hay.count, wanted, n.count) != nil
+                #endif
             }
         }
     }

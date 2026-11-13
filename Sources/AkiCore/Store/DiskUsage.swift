@@ -28,6 +28,7 @@ public struct DiskUsage: Sendable, Equatable {
                 usage.unusedCount += 1
             }
         }
+        #if os(macOS)
         if let values = try? home.url.deletingLastPathComponent().resourceValues(
             forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey])
         {
@@ -35,6 +36,15 @@ public struct DiskUsage: Sendable, Equatable {
             usage.diskFree = (values.volumeAvailableCapacityForImportantUsage ?? 0) / 1_000_000_000 * 1_000_000_000
             usage.diskTotal = Int64(values.volumeTotalCapacity ?? 0)
         }
+        #else
+        // Linux has no "important usage" figure: the plain free space.
+        if let values = try? home.url.deletingLastPathComponent().resourceValues(
+            forKeys: [.volumeAvailableCapacityKey, .volumeTotalCapacityKey])
+        {
+            usage.diskFree = Int64(values.volumeAvailableCapacity ?? 0) / 1_000_000_000 * 1_000_000_000
+            usage.diskTotal = Int64(values.volumeTotalCapacity ?? 0)
+        }
+        #endif
         return usage
     }
 

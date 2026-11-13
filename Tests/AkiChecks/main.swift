@@ -1,5 +1,8 @@
 import AkiCore
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // Run with `swift run AkiChecks`. Exits 1 if any check fails.
 
@@ -168,7 +171,7 @@ check(
     "oversized body → 413")
 
 let lsof = Process()
-lsof.executableURL = URL(filePath: "/usr/sbin/lsof")
+lsof.executableURL = URL(filePath: Command.lsof)
 lsof.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN"]
 let pipe = Pipe()
 lsof.standardOutput = pipe
@@ -418,9 +421,16 @@ if ProcessInfo.processInfo.environment["AKI_BACKFILL_BENCH"] == "1" {
     let firstPass = Date().timeIntervalSince(started)
     bench.backfill()
     var usage = rusage()
+    #if os(macOS)
     getrusage(RUSAGE_SELF, &usage)
+    let peak = usage.ru_maxrss / 1_048_576
+    #else
+    // Linux counts it in kB.
+    getrusage(RUSAGE_SELF.rawValue, &usage)
+    let peak = usage.ru_maxrss / 1024
+    #endif
     print(String(format: "  bench: first pass %.1f s, backfill %.1f s, peak %d MB, codex days %d",
-                 firstPass, Date().timeIntervalSince(started) - firstPass, usage.ru_maxrss / 1_048_576, bench.daily(agent: "codex").count))
+                 firstPass, Date().timeIntervalSince(started) - firstPass, peak, bench.daily(agent: "codex").count))
     try? FileManager.default.removeItem(at: benchHome)
 }
 
@@ -443,6 +453,7 @@ check(UsageLimits.parseCodex(line: Data(codexLine.replacingOccurrences(of: #"{"t
                               updated: .distantPast)?.updated == Date(timeIntervalSince1970: 1791665845.894),
       "a Codex report dated by its own time")
 
+#if os(macOS)
 // The Mac's screenshots: found by their name (any language) or macOS's own mark, nothing else.
 let shots = FileManager.default.temporaryDirectory.appending(path: "aki-shots-\(UUID().uuidString)")
 try? FileManager.default.createDirectory(at: shots.appending(path: "inside"), withIntermediateDirectories: true)
@@ -465,6 +476,7 @@ check(Screenshots.trash(oldOnes).count == 1 && !FileManager.default.fileExists(a
 // Out of the Trash again: the check leaves nothing behind.
 for item in oldOnes { try? FileManager.default.removeItem(at: FileManager.default.homeDirectoryForCurrentUser.appending(path: ".Trash/\(item.url.lastPathComponent)")) }
 try? FileManager.default.removeItem(at: shots)
+#endif
 
 // Codex is working while its log has a turn open.
 check(CodexSessions.turnOpen(#"{"payload":{"type":"task_complete"}}\n{"payload":{"type":"task_started"}}"#) == true, "a turn just started is open")
