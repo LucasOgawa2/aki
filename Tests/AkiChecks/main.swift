@@ -314,6 +314,8 @@ do {
     let text = String(decoding: reply.prefix(max(0, count)), as: UTF8.self)
     check(client >= 0 && sent && count > 0 && text.hasPrefix("HTTP/1.1 503 Service Unavailable\r\n") && elapsed < 2,
           "stalled handler receives 503 within two seconds (\(elapsed) s)")
+    check(text.contains("timed out; a write may still be applied"),
+          "stalled handler's 503 warns that a write may still be applied")
 }
 
 // Send well beyond one server read before reading the rejection, like an upload client.

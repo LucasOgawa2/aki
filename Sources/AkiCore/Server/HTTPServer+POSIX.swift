@@ -166,7 +166,7 @@ public final class HTTPServer: @unchecked Sendable {
                     completed.signal()
                 }
                 guard completed.wait(timeout: .now() + handlerTimeout) == .success else {
-                    Self.send(.error(503, "busy"), on: connection)
+                    Self.send(.error(503, "timed out; a write may still be applied"), on: connection)
                     return
                 }
                 Self.send(result.load(), on: connection)
