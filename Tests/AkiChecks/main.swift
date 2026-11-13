@@ -1852,5 +1852,233 @@ check(failure { _ = try LinuxMarking.MiniHTTP.fetch("/", host: "127.0.0.1", port
 check(failure { _ = try LinuxMarking.MiniHTTP.fetch("/", host: "127.0.0.1", port: 1, over: ScriptedStream([.fail(.timedOut)]), until: soon) } == .timedOut,
       "no answer in time: timed out")
 
+print("linux marking: cdp endpoint")
+typealias CDP = LinuxMarking.CDP
+check(CDP.endpoint(from: nil) == .success(.init(host: "127.0.0.1", port: 9222)), "no AKI_CDP_URL: 127.0.0.1:9222")
+check(CDP.endpoint(from: "http://127.0.0.1:9333") == .success(.init(host: "127.0.0.1", port: 9333)), "AKI_CDP_URL's port")
+check(CDP.endpoint(from: "http://localhost:9333/") == .success(.init(host: "127.0.0.1", port: 9333)), "localhost is 127.0.0.1")
+check(CDP.endpoint(from: "") == .success(.init(host: "127.0.0.1", port: 9222)), "empty: the default")
+check({ if case .failure = CDP.endpoint(from: "http://192.168.0.9:9222") { true } else { false } }(), "another host: refused")
+check({ if case .failure = CDP.endpoint(from: "http://127.0.0.1") { true } else { false } }(), "no port: refused")
+check({ if case .failure = CDP.endpoint(from: "nonsense") { true } else { false } }(), "not a URL: refused")
+let version = Array(#"{"Browser":"HeadlessChrome/154","webSocketDebuggerUrl":"ws://evil.example:1/devtools/browser/5f2c-11"}"#.utf8)
+check(CDP.browserPath(fromVersion: version) == "/devtools/browser/5f2c-11", "only the path of webSocketDebuggerUrl")
+check(CDP.browserPath(fromVersion: Array(#"{"webSocketDebuggerUrl":"ws://127.0.0.1:9/elsewhere"}"#.utf8)) == nil, "a path that isn't DevTools': none")
+check(CDP.browserPath(fromVersion: Array("not json".utf8)) == nil && CDP.browserPath(fromVersion: Array(#"{"webSocketDebuggerUrl":5}"#.utf8)) == nil,
+      "not JSON, or not a string: none")
+
+print("linux marking: cdp client")
+var heldBack: [String] = []
+let clientChannel = ScriptedChannel { id, method, _, _ in
+    // The first answer held back until the second call: they come in the other order, with an event and a stale answer between.
+    if id == 1 { heldBack = [reply(1, #"{"a":1}"#)]; return [] }
+    return [reply(99, "{}"), #"{"method":"Target.targetInfoChanged","params":{}}"#, reply(id, #"{"b":2}"#)] + heldBack
+}
+let cdpClient = CDP.Client(channel: clientChannel)
+let answers = try? cdpClient.run([.init("Target.getTargets"), .init("Runtime.evaluate", ["expression": "1"], session: "S1")], until: soon)
+check(answers == [.result(["a": 1]), .result(["b": 2])], "two calls at once: each answer matched by id, events and stale ids skipped")
+check(clientChannel.sent.map { $0["id"]?.double } == [1, 2] && clientChannel.sent[0]["method"] == "Target.getTargets"
+      && clientChannel.sent[0]["params"] == .object([:]) && clientChannel.sent[0]["sessionId"] == nil
+      && clientChannel.sent[1]["sessionId"] == "S1" && clientChannel.sent[1]["params"]?.object?["expression"] == "1",
+      "each call sent with its id, method, params and the page's session")
+clientChannel.answer = { id, _, _, _ in [#"{"id":\#(id),"error":{"code":-32000,"message":"No target with given id"}}"#] }
+check((try? cdpClient.run([.init("Browser.getWindowForTarget", ["targetId": "gone"])], until: soon)) == [.error("No target with given id")]
+      && clientChannel.sent.last?["id"]?.double == 3, "an error answer is that call's, and ids go on across reads")
+clientChannel.answer = { _, _, _, _ in [] }
+check((try? cdpClient.run([.init("Target.getTargets")], until: soon)) == nil, "no answer by the deadline: the read fails")
+clientChannel.answer = { _, _, _, _ in ["not json"] }
+check((try? cdpClient.run([.init("Target.getTargets")], until: soon)) == nil, "an answer that isn't JSON: the read fails")
+check((try? cdpClient.run([], until: soon)) == [], "no calls: nothing sent, nothing waited for")
+
+print("linux marking: cdp tabs and windows")
+let targetsAnswer = CDP.Answer.result(["targetInfos": [
+    ["targetId": "T1", "type": "page", "title": "Inbox", "url": "https://mail.example/"],
+    ["targetId": "W1", "type": "service_worker", "title": "sw", "url": "https://mail.example/sw.js"],
+    ["targetId": "T2", "type": "page", "title": "", "url": "http://localhost:3000/"],
+    ["targetId": 5, "type": "page", "title": "bad", "url": "x"],
+]])
+check(CDP.pages(from: targetsAnswer) == [.init(id: "T1", title: "Inbox", url: "https://mail.example/"), .init(id: "T2", title: "", url: "http://localhost:3000/")],
+      "the pages of getTargets (no workers; one without a string id skipped)")
+check(CDP.pages(from: .error("x")) == nil && CDP.pages(from: .result([:])) == nil, "an error or no targetInfos: none")
+check(CDP.bounds(from: .result(["windowId": 1, "bounds": ["left": 50, "top": 25, "width": 800, "height": 600, "windowState": "normal"]]))
+      == .init(left: 50, top: 25, width: 800, height: 600), "a window's bounds")
+check(CDP.bounds(from: .result(["windowId": 1, "bounds": ["left": 0, "top": 0, "width": 800, "height": 600, "windowState": "minimized"]])) == nil
+      && CDP.bounds(from: .result(["bounds": ["left": "0"]])) == nil && CDP.bounds(from: .error("no")) == nil, "minimized, malformed or an error: none")
+let win2x = CDP.Window(rect: .init(x: 100, y: 50, width: 1600, height: 1200))
+check(CDP.scale(of: .init(left: 50, top: 25, width: 800, height: 600), matching: win2x) == 2, "the same window at scale 2")
+check(CDP.scale(of: .init(left: 0, top: 0, width: 800, height: 600), matching: .init(rect: .init(x: 0, y: 0, width: 802, height: 598))) != nil,
+      "a few pixels off: still it")
+check(CDP.scale(of: .init(left: 50, top: 25, width: 800, height: 550), matching: win2x) == nil, "the height disagrees: another window")
+check(CDP.scale(of: .init(left: 300, top: 25, width: 800, height: 600), matching: win2x) == nil, "same size elsewhere: another window")
+check(CDP.scale(of: .init(left: 50, top: 25, width: 800, height: 600), matching: .init(rect: .init(x: 80, y: 30, width: 1640, height: 1240), extents: [20, 20, 20, 20])) == 2,
+      "GTK's shadow border taken off before comparing")
+check(CDP.scale(of: .init(left: 0, top: 0, width: 0, height: 600), matching: win2x) == nil, "no width: none")
+
+let probeAnswer = CDP.Answer.result(["result": ["type": "object", "value": ["vis": "visible", "dpr": .number(1.25), "iw": 800, "ih": 560, "sw": 1920, "href": "https://a.example/x"]]])
+check(CDP.viewport(from: probeAnswer) == .init(visible: true, devicePixelRatio: 1.25, innerWidth: 800, innerHeight: 560, screenWidth: 1920, url: "https://a.example/x"),
+      "what the page says of itself")
+check(CDP.viewport(from: .result(["result": ["type": "object", "value": ["vis": "hidden", "dpr": "2", "iw": 800, "ih": 560, "sw": 1920]]])) == nil,
+      "a field of another type: none")
+check(CDP.viewport(from: .result(["result": ["type": "object", "value": ["vis": "hidden", "dpr": 1, "iw": 800, "ih": 560, "sw": 1920]]]))?.visible == false,
+      "hidden, no address: still read")
+check(CDP.viewport(from: .result(["result": ["type": "object"], "exceptionDetails": ["text": "x"]])) == nil, "the script threw: none")
+
+let inbox = CDP.Target(id: "T1", title: "Inbox", url: "u1"), docs = CDP.Target(id: "T2", title: "Docs", url: "u2")
+let docs2 = CDP.Target(id: "T3", title: "Docs 2", url: "u3"), untitled = CDP.Target(id: "T4", title: "", url: "u4")
+check(CDP.pick([.init(target: inbox, visible: false)], windowTitle: nil) == inbox, "one tab in that window: it")
+check(CDP.pick([.init(target: inbox, visible: false), .init(target: docs, visible: true)], windowTitle: "Inbox - Google Chrome") == docs,
+      "the visible one first, whatever the title")
+check(CDP.pick([.init(target: inbox, visible: false), .init(target: docs, visible: false)], windowTitle: "Docs - Google Chrome") == docs,
+      "all hidden (the overlay): the window's title")
+check(CDP.pick([.init(target: inbox, visible: true), .init(target: docs, visible: true)], windowTitle: "Docs - Work - Google Chrome") == docs,
+      "two visible: the title, with the profile's name before the browser's")
+check(CDP.pick([.init(target: docs, visible: false), .init(target: docs2, visible: false)], windowTitle: "Docs 2 - Chromium") == docs2,
+      "one title the start of another: the exact one")
+check(CDP.pick([.init(target: docs, visible: false), .init(target: .init(id: "T9", title: "Docs", url: "u9"), visible: false)], windowTitle: "Docs - Google Chrome") == nil,
+      "two tabs of the same title: none, no guess")
+check(CDP.pick([.init(target: untitled, visible: false), .init(target: inbox, visible: false)], windowTitle: " - Google Chrome") == nil,
+      "a tab without a title matches nothing")
+check(CDP.pick([.init(target: inbox, visible: false), .init(target: docs, visible: false)], windowTitle: nil) == nil, "no window title to tell: none")
+check(CDP.pick([], windowTitle: "Docs - Google Chrome") == nil, "no tab in that window: none")
+
+let flat = CDP.Viewport(visible: true, devicePixelRatio: 1, innerWidth: 1000, innerHeight: 700, screenWidth: 1920)
+let frame = CDP.Bounds(left: 0, top: 0, width: 1000, height: 800)
+check(CDP.pagePoint(at(500, 150), bounds: frame, scale: 1, viewport: flat, monitorWidth: 1920) == .inside(x: 500, y: 50, zoom: 1),
+      "100%: the toolbar's 100 px above the page")
+check(CDP.pagePoint(at(500, 50), bounds: frame, scale: 1, viewport: flat, monitorWidth: 1920) == .outside, "on the toolbar: outside")
+check(CDP.pagePoint(at(1200, 150), bounds: frame, scale: 1, viewport: flat, monitorWidth: 1920) == .outside, "right of the page: outside")
+check(CDP.pagePoint(at(1000, 300), bounds: frame, scale: 2, viewport: .init(visible: true, devicePixelRatio: 2, innerWidth: 1000, innerHeight: 700, screenWidth: 960),
+                    monitorWidth: 1920) == .inside(x: 500, y: 50, zoom: 1), "scale 2: X11 pixels halved")
+check(CDP.pagePoint(at(500, 150), bounds: frame, scale: 1, viewport: .init(visible: true, devicePixelRatio: 1.25, innerWidth: 800, innerHeight: 560, screenWidth: 1920),
+                    monitorWidth: 1920) == .inside(x: 400, y: 40, zoom: 1.25), "page zoom 125% (in devicePixelRatio)")
+check(CDP.pagePoint(at(600, 400), bounds: .init(left: 100, top: 200, width: 1000, height: 800), scale: 1, viewport: flat, monitorWidth: 1920)
+      == .inside(x: 500, y: 100, zoom: 1), "a window away from the corner")
+check(CDP.pagePoint(at(500, 150), bounds: frame, scale: 1, viewport: .init(visible: true, devicePixelRatio: 1, innerWidth: 1000, innerHeight: 700, screenWidth: 960),
+                    monitorWidth: 1920) == .unsure, "the page's screen at another scale than the window's: unsure")
+
+print("linux marking: cdp element")
+let saveJSON = ##"{"chain":[{"tag":"button","id":"save","cls":["primary","big","x3"],"x":1,"y":2,"w":100,"h":30,"text":"Save changes"},{"tag":"form","id":null,"cls":[],"w":400,"h":300,"text":"x"}],"src":"src/App.tsx:12","sel":"#save","html":"<button id=\"save\">Save changes</button>"}"##
+check(CDP.hit(fromResult: saveJSON) == .element(.init(path: "button#save.primary.big “Save changes”", tag: "button", text: "Save changes", id: "save",
+      classes: ["primary", "big", "x3"], source: "src/App.tsx:12", html: "<button id=\"save\">Save changes</button>", selector: "#save")),
+      "the element as the Mac labels it: tag#id.two classes “its words”")
+let longText = String(repeating: "word ", count: 40)
+let longJSON = #"{"chain":[{"tag":"p","id":"","cls":[],"w":10,"h":10,"text":"\#(longText)"}],"src":"","sel":"","html":"\#(String(repeating: "h", count: 900))"}"#
+let longHit = CDP.hit(fromResult: longJSON)
+check(longHit == .element(.init(path: "p “\(String(longText.prefix(28)))…”", tag: "p", text: String(longText.prefix(80)), id: nil, classes: [], source: nil,
+      html: String(repeating: "h", count: 300), selector: nil)), "long words cut (28 in the path, 80, HTML 300); empty id, source, selector: none")
+check(CDP.hit(fromResult: #"{"chain":[{"tag":"i","cls":[],"w":2,"h":2,"text":"x"},{"tag":"a","id":7,"cls":["link",3],"w":50,"h":20,"text":"x"}],"sel":"a"}"#)
+      == .element(.init(path: "a.link", tag: "a", text: "x", id: nil, classes: ["link"], selector: "a")),
+      "a speck too small skipped for the next one up; values of the wrong type dropped; one letter isn't quoted")
+check(CDP.hit(fromResult: #"{"outside":true}"#) == .outside && CDP.hit(fromResult: #"{"background":true}"#) == .background, "outside and background")
+check(CDP.hit(fromResult: "{}") == .none && CDP.hit(fromResult: "nonsense") == .none && CDP.hit(fromResult: #"{"chain":[]}"#) == .none
+      && CDP.hit(fromResult: #"{"error":"TypeError"}"#) == .none, "nothing, garbage, an empty chain or the script's error: none")
+check(CDP.hit(fromResult: #"{"chain":[{"tag":"\#(String(repeating: "t", count: 500))","cls":[],"w":9,"h":9}],"src":"\#(String(repeating: "s", count: 500))"}"#)
+      .element?.path.count == 300 && CDP.hit(fromResult: #"{"chain":[{"tag":"b","cls":[],"w":9,"h":9}],"src":"\#(String(repeating: "s", count: 500))"}"#).element?.source?.count == 300,
+      "a huge tag or source: cut at 300")
+let script = CDP.elementScript(x: 12.5, y: 40, zoom: 1.25)
+check(script.hasPrefix("(function(px,py,Z){") && script.hasSuffix("})(12.5,40,1.25)"), "the extraction is one function called with the point and zoom")
+check(script.contains(#"/rgba\(.*,\s*0\)$/"#) && script.contains(#".replace(/\s+/g,' ')"#), "its regexes reach the page with one backslash")
+check(!script.contains("window.__aki") && !script.contains(".click(") && !script.contains("location=") && !script.contains(".focus("),
+      "no window.__aki*, and nothing that clicks, focuses or navigates")
+check(script.contains("__akiPoint=[x,y]") && script.contains("var p=__akiPoint"), "deep() leaves the point for result()'s caret check")
+
+print("linux marking: cdp page reader")
+/// A browser with these pages, each window's bounds, visibility and title; the
+/// extraction answers `element`. The bounds come only once all were asked (at once).
+final class FakeBrowser {
+    struct Page { var id: String, title: String, url: String, bounds: String, visible: Bool }
+    var pages: [Page]
+    var element = ##"{"chain":[{"tag":"button","id":"save","cls":[],"w":100,"h":30,"text":"Save"}],"sel":"#save"}"##
+    var evaluateFails = false
+    var held: [String] = []
+    lazy var channel = ScriptedChannel { [unowned self] id, method, params, session in
+        switch method {
+        case "Target.getTargets":
+            let infos = self.pages.map { #"{"targetId":"\#($0.id)","type":"page","title":"\#($0.title)","url":"\#($0.url)"}"# }
+                + [#"{"targetId":"SW","type":"service_worker","title":"","url":"x"}"#]
+            return [reply(id, #"{"targetInfos":[\#(infos.joined(separator: ","))]}"#)]
+        case "Browser.getWindowForTarget":
+            let page = self.pages.first { $0.id == params["targetId"]?.string }
+            self.held.append(reply(id, #"{"windowId":1,"bounds":\#(page?.bounds ?? "{}")}"#))
+            guard self.held.count == self.pages.count else { return [] }
+            defer { self.held = [] }
+            return self.held.reversed()
+        case "Target.attachToTarget":
+            return [#"{"method":"Target.attachedToTarget","params":{}}"#, reply(id, #"{"sessionId":"S-\#(params["targetId"]?.string ?? "")"}"#)]
+        case "Runtime.evaluate":
+            if self.evaluateFails { return [#"{"id":\#(id),"error":{"message":"Session with given id not found"}}"#] }
+            let page = self.pages.first { "S-" + $0.id == session }
+            if params["expression"]?.string == CDP.probeScript {
+                return [reply(id, #"{"result":{"type":"object","value":{"vis":"\#(page?.visible == true ? "visible" : "hidden")","dpr":1,"iw":1000,"ih":700,"sw":1920,"href":"\#(page?.url ?? "")"}}}"#)]
+            }
+            let escaped = String(decoding: try! JSONEncoder().encode(JSONValue.string(self.element)), as: UTF8.self)
+            return [reply(id, #"{"result":{"type":"string","value":\#(escaped)}}"#)]
+        default: return []
+        }
+    }
+    init(_ pages: [Page]) { self.pages = pages }
+    var methods: [String] { channel.sent.compactMap { $0["method"]?.string } }
+}
+let here = #"{"left":0,"top":0,"width":1000,"height":800,"windowState":"normal"}"#
+let elsewhere = #"{"left":1000,"top":0,"width":900,"height":800,"windowState":"normal"}"#
+let chromeWindow = CDP.Window(rect: .init(x: 0, y: 0, width: 1000, height: 800))
+let browser = FakeBrowser([.init(id: "T1", title: "App", url: "http://localhost:3000/", bounds: here, visible: true),
+                           .init(id: "T2", title: "Mail", url: "https://mail.example/", bounds: elsewhere, visible: true)])
+var connects = 0
+let pageReader = CDP.PageReader { _ in connects += 1; return browser.channel }
+let firstRead = pageReader.read(window: chromeWindow, title: "App - Google Chrome", point: at(500, 150), monitorWidth: 1920, until: soon)
+check(firstRead == .init(url: "http://localhost:3000/", element: .init(path: "button#save “Save”", tag: "button", text: "Save", id: "save", selector: "#save")),
+      "a point on the page: the tab of that window, its address and the element")
+check(browser.methods == ["Target.getTargets", "Browser.getWindowForTarget", "Browser.getWindowForTarget", "Target.attachToTarget", "Runtime.evaluate", "Runtime.evaluate"],
+      "the windows asked at once; only the tab in the mark's window attached; never Runtime.enable")
+let attach = browser.channel.sent.first { $0["method"] == "Target.attachToTarget" }?["params"]?.object
+let extract = browser.channel.sent.last?["params"]?.object
+check(attach?["targetId"] == "T1" && attach?["flatten"] == .bool(true), "attached flat, to its own session")
+check(extract?["returnByValue"] == .bool(true) && extract?["silent"] == .bool(true) && extract?["contextId"] == nil
+      && extract?["expression"]?.string == CDP.elementScript(x: 500, y: 50, zoom: 1) && browser.channel.sent.last?["sessionId"] == "S-T1",
+      "the extraction by value, silent, in the page's main world, at the page's point")
+let before = browser.channel.sent.count
+let secondRead = pageReader.read(window: chromeWindow, title: "App - Google Chrome", point: nil, monitorWidth: 1920, until: soon)
+check(secondRead == .init(url: "http://localhost:3000/") && browser.methods.dropFirst(before) == ["Runtime.evaluate"] && connects == 1,
+      "the next mark (an area): the same tab, only its address asked again")
+let toolbar = pageReader.read(window: chromeWindow, title: nil, point: at(500, 50), monitorWidth: 1920, until: soon)
+check(toolbar == .init(url: "http://localhost:3000/") && browser.methods.last == "Runtime.evaluate" && browser.channel.sent.last?["params"]?.object?["expression"]?.string == CDP.probeScript,
+      "a point on the tabs bar: the address, no element asked")
+browser.element = #"{"background":true}"#
+check(pageReader.read(window: chromeWindow, title: nil, point: at(500, 150), monitorWidth: 1920, until: soon) == .init(url: "http://localhost:3000/"),
+      "empty space: the address, no element")
+browser.element = "garbage"
+check(pageReader.read(window: chromeWindow, title: nil, point: at(500, 150), monitorWidth: 1920, until: soon) == .init(url: "http://localhost:3000/"),
+      "an answer that isn't one: the address, no element")
+check(pageReader.read(window: chromeWindow, title: nil, point: at(500, 150), monitorWidth: 960, until: soon) == .init(url: "http://localhost:3000/"),
+      "unsure of the scale: the address, no element")
+
+let tabs = FakeBrowser([.init(id: "A", title: "Inbox", url: "https://a/", bounds: here, visible: false),
+                        .init(id: "B", title: "Docs", url: "https://b/", bounds: here, visible: false)])
+let tabsReader = CDP.PageReader { _ in tabs.channel }
+check(tabsReader.read(window: chromeWindow, title: "Docs - Google Chrome", point: nil, monitorWidth: 1920, until: soon) == .init(url: "https://b/")
+      && tabs.methods.filter { $0 == "Target.attachToTarget" }.count == 2, "two tabs in the window, both hidden: the window's title tells")
+let twins = FakeBrowser([.init(id: "A", title: "Docs", url: "https://a/", bounds: here, visible: false),
+                         .init(id: "B", title: "Docs", url: "https://b/", bounds: here, visible: false)])
+check(CDP.PageReader { _ in twins.channel }.read(window: chromeWindow, title: "Docs - Google Chrome", point: at(500, 150), monitorWidth: 1920, until: soon) == .init()
+      && twins.methods.filter { $0 == "Runtime.evaluate" }.count == 2,
+      "two twin tabs: nothing, not even the address, no element asked")
+let away = FakeBrowser([.init(id: "A", title: "X", url: "https://a/", bounds: elsewhere, visible: true)])
+check(CDP.PageReader { _ in away.channel }.read(window: chromeWindow, title: nil, point: at(500, 150), monitorWidth: 1920, until: soon) == .init()
+      && !away.methods.contains("Target.attachToTarget"), "no page in the mark's window: nothing, nothing attached")
+check(CDP.PageReader { _ in throw LinuxMarking.WebSocket.Failure.io("Connection refused") }
+      .read(window: chromeWindow, title: nil, point: at(500, 150), monitorWidth: 1920, until: soon) == .init(), "no browser listening: nothing")
+let mute = ScriptedChannel { _, _, _, _ in [] }
+check(CDP.PageReader { _ in mute }.read(window: chromeWindow, title: nil, point: at(500, 150), monitorWidth: 1920, until: soon) == .init() && mute.closed,
+      "a browser that never answers: nothing, and its connection dropped")
+let closedTab = FakeBrowser([.init(id: "T1", title: "App", url: "http://localhost:3000/", bounds: here, visible: true)])
+var closedConnects = 0
+let closedReader = CDP.PageReader { _ in closedConnects += 1; return closedTab.channel }
+_ = closedReader.read(window: chromeWindow, title: nil, point: nil, monitorWidth: 1920, until: soon)
+closedTab.evaluateFails = true
+let afterClose = closedReader.read(window: chromeWindow, title: nil, point: nil, monitorWidth: 1920, until: soon)
+check(afterClose == .init(url: "http://localhost:3000/") && closedConnects == 2 && closedTab.methods.filter { $0 == "Target.getTargets" }.count == 2,
+      "the kept tab's session gone: found again from the start (its address from the listing)")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

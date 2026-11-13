@@ -19,3 +19,25 @@ final class ScriptedStream: ByteStream {
     }
     func close() { closed = true }
 }
+
+/// A browser that answers each call as `answer` says (any number of messages per call:
+/// events, late or out-of-order answers); with nothing to read, it times out.
+final class ScriptedChannel: MessageChannel {
+    var sent: [[String: JSONValue]] = []
+    var inbox: [String] = []
+    var answer: (_ id: Int, _ method: String, _ params: [String: JSONValue], _ session: String?) -> [String]
+    init(_ answer: @escaping (_ id: Int, _ method: String, _ params: [String: JSONValue], _ session: String?) -> [String]) { self.answer = answer }
+    func send(_ text: String, until deadline: ContinuousClock.Instant) throws {
+        let message = (try? JSONDecoder().decode([String: JSONValue].self, from: Data(text.utf8))) ?? [:]
+        sent.append(message)
+        inbox += answer(Int(message["id"]?.double ?? -1), message["method"]?.string ?? "", message["params"]?.object ?? [:], message["sessionId"]?.string)
+    }
+    func receive(until deadline: ContinuousClock.Instant) throws -> String {
+        guard !inbox.isEmpty else { throw LinuxMarking.WebSocket.Failure.timedOut }
+        return inbox.removeFirst()
+    }
+    var closed = false
+    func close() { closed = true }
+}
+
+func reply(_ id: Int, _ result: String) -> String { #"{"id":\#(id),"result":\#(result)}"# }

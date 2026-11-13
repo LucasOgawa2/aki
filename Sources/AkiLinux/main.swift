@@ -28,6 +28,10 @@ if CommandLine.arguments.dropFirst().first == "--probe-capture" {
     } catch { fail("\(error)") }
     exit(0)
 }
+if CommandLine.arguments.dropFirst().first == "--probe-cdp" {
+    // Not for people: what the browser at AKI_CDP_URL says (tabs, windows, an element).
+    exit(Browser.probe(Array(CommandLine.arguments.dropFirst(2)), environment: environment))
+}
 guard CommandLine.arguments.count == 1 else { fail("usage: aki mark (no arguments)") }
 
 if environment["XDG_SESSION_TYPE"] == "wayland" {
