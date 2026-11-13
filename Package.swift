@@ -19,3 +19,17 @@ let package = Package(
         .executableTarget(name: "AkiChecks", dependencies: ["AkiCore"], path: "Tests/AkiChecks"),
     ]
 )
+
+#if os(Linux)
+// Linux: the core and the command line only. The app (AppKit, Sparkle) is macOS's;
+// swift-crypto stands in for CryptoKit.
+package.dependencies = [.package(url: "https://github.com/apple/swift-crypto", from: "4.5.2")]
+package.targets = [
+    .target(name: "CZstd"),
+    .target(name: "AkiCore", dependencies: ["CZstd", .product(name: "Crypto", package: "swift-crypto")]),
+    .executableTarget(name: "Aki", dependencies: ["AkiCore"], path: "Sources/Aki",
+        exclude: ["App", "Codenotch", "History", "Localization", "Marking", "Settings", "Sidebar"],
+        swiftSettings: [.swiftLanguageMode(.v5)]),
+    .executableTarget(name: "AkiChecks", dependencies: ["AkiCore"], path: "Tests/AkiChecks"),
+]
+#endif
