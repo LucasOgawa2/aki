@@ -70,6 +70,19 @@ public final class HTTPServer: @unchecked Sendable {
         }
     }
 
+    public enum AcceptAction: Equatable, Sendable { case retry, pause, stop }
+
+    /// A connection error can be retried; resource pressure needs a brief pause.
+    public static func acceptAction(for failure: Int32) -> AcceptAction {
+        switch failure {
+        // Linux accept(2): pending TCP errors concern one connection, not the listener.
+        case EINTR, ECONNABORTED, EPERM, ENETDOWN, EPROTO, ENOPROTOOPT,
+             EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, ENETUNREACH: .retry
+        case EMFILE, ENFILE, ENOBUFS, ENOMEM: .pause
+        default: .stop
+        }
+    }
+
     private func acceptLoop(_ fd: Int32) {
         defer {
             lock.withLock {
@@ -92,12 +105,13 @@ public final class HTTPServer: @unchecked Sendable {
             }
             let failure = errno
             guard lock.withLock({ listening == fd }) else { return }
-            if failure == EINTR || failure == ECONNABORTED { continue }
-            if failure == EMFILE || failure == ENFILE || failure == ENOBUFS || failure == ENOMEM {
+            switch Self.acceptAction(for: failure) {
+            case .retry: continue
+            case .pause:
                 Thread.sleep(forTimeInterval: 0.01)
                 continue
+            case .stop: return
             }
-            return
         }
     }
 

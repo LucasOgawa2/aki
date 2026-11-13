@@ -202,6 +202,16 @@ try liveLogHandle.close()
 server.stop()
 
 #if os(Linux)
+for failure in [EINTR, ECONNABORTED, EPERM, ENETDOWN, EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, ENETUNREACH] {
+    check(HTTPServer.acceptAction(for: failure) == .retry, "accept retries connection error \(failure) immediately")
+}
+for failure in [EMFILE, ENFILE, ENOBUFS, ENOMEM] {
+    check(HTTPServer.acceptAction(for: failure) == .pause, "accept pauses on resource exhaustion \(failure)")
+}
+for failure in [EBADF, EINVAL] {
+    check(HTTPServer.acceptAction(for: failure) == .stop, "accept stops on invalid listener \(failure)")
+}
+
 // Exhaust descriptors only after creating the client, so connect can still queue
 // a connection while accept sees EMFILE. Restore the limit before Foundation I/O.
 let pressureServer = HTTPServer(port: 0) { _ in HTTPResponse(status: 200, body: Data("recovered".utf8)) }
