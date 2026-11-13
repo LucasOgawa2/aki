@@ -245,7 +245,9 @@ retiring.stop()
 retiring.stop()
 let successor = HTTPServer(port: 0) { _ in HTTPResponse(status: 200) }
 let successorPort = try await successor.start()
-let successorReply = try? await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(successorPort)/")!)
+var successorRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(successorPort)/")!)
+successorRequest.timeoutInterval = 2
+let successorReply = try? await URLSession.shared.data(for: successorRequest)
 check((successorReply?.1 as? HTTPURLResponse)?.statusCode == 200, "stopping a blocked accept loop leaves the next server alive")
 successor.stop()
 #endif
