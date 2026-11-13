@@ -259,6 +259,8 @@ let rendered = AnnotationText.render(rich, home: home)
 check(rendered.contains("## #r1 · r1  (2026-10-03 10:20)"), "header with code, id and date")
 // Short codes: the same everywhere, found from any terminal.
 check(MarkFolder.code("aki_1791339895884_df9f68ee") == "df9f68", "short code of a mark")
+// SHA-256 of "note_1" (from `shasum -a 256`): the same folder whichever crypto library makes it.
+check(MarkFolder.folderName("note_1") == "x85e3ec00075af87", "a foreign id's folder is a fingerprint of it")
 check(markCode("aki_1791339895884_df9f68ee") == "#df9f68", "short code as people read it")
 let coded = [Annotation(["id": "aki_1_df9f68ee"]), Annotation(["id": "aki_2_e8a1b2c3"]), Annotation(["id": "aki_3_e8a1ffff"])]
 check(MarkFolder.resolve(["#df9f68"], in: coded).found.map(\.id) == ["aki_1_df9f68ee"], "finds a mark by #code")
