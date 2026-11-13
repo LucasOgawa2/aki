@@ -1,3 +1,4 @@
+#if canImport(Network)
 import Foundation
 import Network
 
@@ -99,3 +100,4 @@ final class Once: @unchecked Sendable {
         }
     }
 }
+#endif
