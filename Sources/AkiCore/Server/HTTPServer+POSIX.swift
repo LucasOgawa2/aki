@@ -14,6 +14,7 @@ public final class HTTPServer: @unchecked Sendable {
     private let requestedPort: UInt16
     private let maxBody: Int
     private let requestTimeout: TimeInterval
+    private let handlerTimeout: TimeInterval
     private let handler: Handler
     // Guards the listener and the number of active connection threads.
     private let lock = NSLock()
@@ -21,10 +22,12 @@ public final class HTTPServer: @unchecked Sendable {
     private var activeConnections = 0
 
     /// `port` 0 picks a free port; `requestTimeout` bounds the full request read from accept.
-    public init(port: UInt16, maxBody: Int = 25 * 1024 * 1024, requestTimeout: TimeInterval = 10, handler: @escaping Handler) {
+    /// `handlerTimeout` bounds the wait for a response after a complete request.
+    public init(port: UInt16, maxBody: Int = 25 * 1024 * 1024, requestTimeout: TimeInterval = 10, handlerTimeout: TimeInterval = 8, handler: @escaping Handler) {
         requestedPort = port
         self.maxBody = maxBody
         self.requestTimeout = requestTimeout
+        self.handlerTimeout = handlerTimeout
         self.handler = handler
     }
 
@@ -160,7 +163,10 @@ public final class HTTPServer: @unchecked Sendable {
                     result.store(await handler(request))
                     completed.signal()
                 }
-                completed.wait()
+                guard completed.wait(timeout: .now() + handlerTimeout) == .success else {
+                    Self.send(.error(503, "busy"), on: connection)
+                    return
+                }
                 Self.send(result.load(), on: connection)
                 return
             case .incomplete where count > 0:

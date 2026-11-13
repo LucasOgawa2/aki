@@ -295,6 +295,26 @@ do {
           "65th idle connection reaches EOF within half a second (\(elapsed) s)")
 }
 
+do {
+    let stalledServer = HTTPServer(port: 0, handlerTimeout: 0.5) { _ in
+        try? await Task.sleep(for: .seconds(3))
+        return HTTPResponse(status: 200)
+    }
+    let stalledPort = try await stalledServer.start()
+    let client = connectClient(to: stalledPort)
+    defer {
+        if client >= 0 { close(client) }
+        stalledServer.stop()
+    }
+    let started = ProcessInfo.processInfo.systemUptime
+    let sent = sendRequest("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n", on: client)
+    var reply = [UInt8](repeating: 0, count: 4096)
+    let count = recv(client, &reply, reply.count, 0)
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    check(client >= 0 && sent && count > 0 && String(decoding: reply.prefix(max(0, count)), as: UTF8.self).hasPrefix("HTTP/1.1 503 ") && elapsed < 2,
+          "stalled handler receives 503 within two seconds (\(elapsed) s)")
+}
+
 // Send well beyond one server read before reading the rejection, like an upload client.
 func oversizedUploadReply() -> (sent: Bool, response: String, readError: Int32) {
     let client = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
