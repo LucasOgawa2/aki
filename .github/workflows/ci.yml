@@ -56,6 +56,7 @@ jobs:
       - name: Build
         run: swift build
       - name: Verify clean working tree
+        # If Package.resolved changes, run swift package resolve and commit the file.
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           status="$(git status --porcelain)"
