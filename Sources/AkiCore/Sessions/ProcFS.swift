@@ -20,7 +20,9 @@ public struct ProcFS: Sendable {
     /// The folder it works in (the `cwd` link; only the user's own processes can be read).
     public func cwd(of pid: Int32) -> String? {
         let path = try? FileManager.default.destinationOfSymbolicLink(atPath: root.appending(path: "\(pid)/cwd").path)
-        return path?.isEmpty == false ? path : nil
+        guard let path, !path.isEmpty else { return nil }
+        let suffix = " (deleted)"
+        return path.hasSuffix(suffix) ? String(path.dropLast(suffix.count)) : path
     }
 
     /// The environment it started with (`environ`: one NUL-ended "NAME=value" each).
@@ -30,7 +32,8 @@ public struct ProcFS: Sendable {
         for entry in data.split(separator: 0) {
             let text = String(decoding: entry, as: UTF8.self)
             guard let equals = text.firstIndex(of: "=") else { continue }
-            result[String(text[..<equals])] = String(text[text.index(after: equals)...])
+            let key = String(text[..<equals])
+            if result[key] == nil { result[key] = String(text[text.index(after: equals)...]) }
         }
         return result
     }

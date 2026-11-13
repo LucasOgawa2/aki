@@ -363,6 +363,12 @@ public enum AgentSessions {
         return nil
     }
 
+    /// Linux's environment already has argv removed by procfs.
+    public static func terminalHandle(inEnvironment environment: [String: String]) -> String? {
+        let handle = environment["ORCA_TERMINAL_HANDLE"]
+        return handle?.isEmpty == false ? handle : nil
+    }
+
     private static func terminalHandle(of pid: Int32) -> String? {
         #if os(macOS)
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
@@ -373,8 +379,7 @@ public enum AgentSessions {
         return terminalHandle(inProcessArguments: Data(bytes.prefix(size)))
         #else
         // Only the environment: a prompt in the arguments naming a handle is not an identity.
-        let handle = ProcFS().environment(of: pid)?["ORCA_TERMINAL_HANDLE"]
-        return handle?.isEmpty == false ? handle : nil
+        return terminalHandle(inEnvironment: ProcFS().environment(of: pid) ?? [:])
         #endif
     }
 
