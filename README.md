@@ -217,7 +217,7 @@ python3 scripts/check-translations.py   # every language complete, no repeated t
 
 On Linux, only the core and the `aki` command build for now (no app, no marking): `swift build`, then `swift run AkiChecks`. `aki list`, `wait`, `show`, `done`, `delete`, `sessions`, `terminals`, `recent`, `usage`, `mcp`, `serve`, `move-to-mark-folders` and `--version` work. Running the CLI requires `ps` (procps). Process details, open logs and listening ports come from `/proc`; `lsof` is only needed to run `AkiChecks`.
 
-On Linux, `aki usage` shows Codex limits and Claude tokens/cost; Claude's 5-hour and weekly limits appear only if something outside Aki writes `~/.aki/status/<session>.json` or an app named Claude has left its cache in `$XDG_CONFIG_HOME/Claude/Cache/Cache_Data` (`~/.config/Claude/Cache/Cache_Data` when that variable is unset).
+On Linux, `aki usage` shows Codex limits and Claude tokens/cost; Claude's 5-hour and weekly limits appear only if something outside Aki writes `~/.aki/status/<session>.json` or an app named Claude has left its cache in `$XDG_CONFIG_HOME/Claude/Cache/Cache_Data` (`~/.config/Claude/Cache/Cache_Data` when that variable is unset or not an absolute path).
 
 How it's built: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · how to help: [CONTRIBUTING.md](CONTRIBUTING.md) · what changed: [CHANGELOG.md](CHANGELOG.md) · security reports: [SECURITY.md](SECURITY.md).
 
