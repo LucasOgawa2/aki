@@ -30,9 +30,22 @@ extension LinuxMarking {
         public private(set) var batch: Set<UUID> = []
         /// Every session's name seen this round, to name one that closed.
         private var names: [String: String] = [:]
+        /// The reads each mark still waits for (one per source: its words now, its page later).
+        private var pending: [UUID: Int] = [:]
+        /// The send waiting for them: its token (an older timer never sends) and where it goes.
+        private var wait: Wait?
+        private struct Wait: Equatable, Sendable {
+            var token: Int
+            var destination: String
+        }
+        private var waits = 0
 
-        public init(sessions: [AgentTerminal]) {
+        /// Whether an area's words are read after it's drawn (off when there's no tesseract).
+        public let readsText: Bool
+
+        public init(sessions: [AgentTerminal], readsText: Bool = false) {
             self.sessions = sessions
+            self.readsText = readsText
             for session in sessions { names[session.id] = session.name }
             // The first of those used last (ties, or none known: the list's order).
             destination = sessions.reduce(nil as AgentTerminal?) { best, session in
@@ -52,16 +65,31 @@ extension LinuxMarking {
             case destination(Int)
             case sessionsChanged([AgentTerminal])
             case sendFinished(failed: [UUID], warning: String?)
+            /// What was read about a mark (nil fields: nothing, or the read failed).
+            case enriched(id: UUID, Enrichment)
+            /// The time a send waits for the reads is up (the `.wait` with this token).
+            case deadline(Int)
+        }
+
+        /// What a read brings back; each field fills the mark's own, when there.
+        public struct Enrichment: Equatable, Sendable {
+            public var text: String?
+            public init(text: String? = nil) { self.text = text }
         }
 
         public enum Effect: Equatable, Sendable {
             case send([PortableMark], destination: String)
             case close
+            /// Read what's under this mark, then come back with `.enriched`.
+            case enrich(PortableMark)
+            /// Ctrl+Enter with reads still going: send `.deadline(token)` when the wait is up.
+            case wait(token: Int)
         }
 
         public mutating func handle(_ event: Event) -> Effect? {
             switch event {
-            case .sessionsChanged, .sendFinished: break
+            // Answers that come by themselves: the warning is the person's to clear.
+            case .sessionsChanged, .sendFinished, .enriched, .deadline: break
             default: warning = nil
             }
             switch event {
@@ -77,6 +105,10 @@ extension LinuxMarking {
                 marks.append(mark)
                 editing = mark.id
                 justMade = true
+                if readsText, !rect.isPoint {
+                    pending[mark.id] = 1
+                    return .enrich(mark)
+                }
             case let .draft(text):
                 guard editing != nil else { return nil }
                 draft = text
@@ -97,13 +129,14 @@ extension LinuxMarking {
                 if editing != nil {
                     cancelEditing()
                 } else if !marks.isEmpty {
-                    marks.removeLast()
+                    pending[marks.removeLast().id] = nil
                     renumber()
                 }
-            case .nextDestination: cycleDestination(by: 1)
-            case .previousDestination: cycleDestination(by: -1)
+            // Waiting for the reads, the send already has its destination.
+            case .nextDestination: if wait == nil { cycleDestination(by: 1) }
+            case .previousDestination: if wait == nil { cycleDestination(by: -1) }
             case let .destination(n):
-                if n >= 1, n <= sessions.count { destination = sessions[n - 1].id }
+                if wait == nil, n >= 1, n <= sessions.count { destination = sessions[n - 1].id }
             case let .sessionsChanged(open):
                 // A closed destination stays: the marks never go elsewhere unasked.
                 sessions = open
@@ -134,11 +167,29 @@ extension LinuxMarking {
                     return nil
                 }
                 sending = true
-                batch = Set(marks.map(\.id))
-                return .send(marks, destination: destination)
+                // A read still going (a mark just drawn): the send waits for it, up to a time.
+                if marks.contains(where: { pending[$0.id] != nil }) {
+                    waits += 1
+                    wait = Wait(token: waits, destination: destination)
+                    return .wait(token: waits)
+                }
+                return startSend(to: destination)
+            case let .enriched(id, enrichment):
+                // A mark undone, dropped or sent meanwhile: nothing waits for it.
+                guard let count = pending[id] else { return nil }
+                if let index = marks.firstIndex(where: { $0.id == id }), let text = enrichment.text {
+                    marks[index].selectedText = text
+                }
+                pending[id] = count > 1 ? count - 1 : nil
+                if let wait, !marks.contains(where: { pending[$0.id] != nil }) { return startSend(to: wait.destination) }
+            case let .deadline(token):
+                guard let wait, wait.token == token else { return nil }
+                return startSend(to: wait.destination)
             case let .sendFinished(failed, why):
-                guard sending else { return nil }
+                guard sending, wait == nil else { return nil }
                 sending = false
+                // Sent with what they had: a read of theirs arriving now changes nothing.
+                for id in batch { pending[id] = nil }
                 // What was saved leaves the queue; what wasn't stays, to send again.
                 marks.removeAll { batch.contains($0.id) && !failed.contains($0.id) }
                 batch = []
@@ -157,6 +208,18 @@ extension LinuxMarking {
             return nil
         }
 
+        /// Waiting for the reads before sending (shown as such; `sending` is true too).
+        public var waitingForReads: Bool { wait != nil }
+
+        /// Whether a mark's words (or, later, its page) are still being read.
+        public func isPending(_ id: UUID) -> Bool { pending[id] != nil }
+
+        private mutating func startSend(to destination: String) -> Effect {
+            wait = nil
+            batch = Set(marks.map(\.id))
+            return .send(marks, destination: destination)
+        }
+
         private mutating func commitDraft() {
             guard let editing, let index = marks.firstIndex(where: { $0.id == editing }) else { return }
             marks[index].comment = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -168,6 +231,7 @@ extension LinuxMarking {
         private mutating func cancelEditing() {
             guard let editing else { return }
             marks.removeAll { $0.id == editing }
+            pending[editing] = nil
             self.editing = nil
             draft = ""
             justMade = false

@@ -1652,5 +1652,93 @@ OCR.removeStale(in: ocrRun, before: Date().addingTimeInterval(-60))
 check(Set((try? FileManager.default.contentsOfDirectory(atPath: ocrRun.path)) ?? []) == ["aki-ocr-2-b.ppm", "other.ppm"],
       "at start, old crops of ours are removed; a fresh one (another read) and anything else stay")
 
+print("linux marking: overlay waiting for the text")
+var reading = Overlay(sessions: [sessionA], readsText: true)
+let readArea = reading.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+check(readArea == .enrich(reading.marks[0]) && reading.isPending(reading.marks[0].id), "reading text: an area drawn asks for its words, and waits for them")
+check(reading.handle(.pointer(screen: 0, from: at(5, 5), to: at(5, 5), app: nil)) == nil && !reading.isPending(reading.marks[1].id),
+      "a point reads nothing (as on the Mac)")
+var notReading = Overlay(sessions: [sessionA])
+check(notReading.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil)) == nil && !notReading.isPending(notReading.marks[0].id),
+      "no tesseract: nothing asked, nothing waited for")
+
+let readID = reading.marks[0].id
+check(reading.handle(.enriched(id: readID, .init(text: "Save changes"))) == nil && reading.marks[0].selectedText == "Save changes" && !reading.isPending(readID),
+      "the words arrive: on the mark, no longer waited for")
+check(reading.handle(.enriched(id: readID, .init(text: "again"))) == nil && reading.marks[0].selectedText == "Save changes",
+      "a second answer for a mark not waited for: ignored")
+var undone = Overlay(sessions: [sessionA], readsText: true)
+_ = undone.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+let undoneID = undone.marks[0].id
+_ = undone.handle(.undo)
+_ = undone.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+check(undone.handle(.enriched(id: undoneID, .init(text: "late"))) == nil && !undone.isPending(undoneID) && undone.marks.allSatisfy { $0.selectedText == nil },
+      "the words of a mark undone arrive late: ignored")
+let escapedID = undone.marks[0].id
+_ = undone.handle(.escape)
+check(undone.marks.isEmpty && !undone.isPending(escapedID) && undone.handle(.enriched(id: escapedID, .init(text: "x"))) == nil && undone.marks.isEmpty,
+      "Esc on its card: the same")
+
+func waitToken(_ effect: Overlay.Effect?) -> Int? {
+    if case let .wait(token)? = effect { return token }
+    return nil
+}
+var waiting = Overlay(sessions: [sessionA, sessionB], readsText: true)
+_ = waiting.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+_ = waiting.handle(.draft("rename it"))
+let waitingID = waiting.marks[0].id
+let firstToken = waitToken(waiting.handle(.send))
+check(firstToken != nil && waiting.sending && waiting.waitingForReads && waiting.marks[0].comment == "rename it" && waiting.destination == "b",
+      "Ctrl+Enter with a read going: the card closes, the send waits for it")
+check(waiting.handle(.send) == nil && waiting.handle(.commit) == nil && waiting.handle(.escape) == nil && waiting.sending, "Ctrl+Enter twice, Enter and Esc while waiting: ignored")
+_ = waiting.handle(.nextDestination)
+_ = waiting.handle(.previousDestination)
+_ = waiting.handle(.destination(1))
+check(waiting.destination == "b", "Tab, Shift+Tab and Ctrl+1 while waiting: ignored, it goes where Ctrl+Enter said")
+let waitSend = waiting.handle(.enriched(id: waitingID, .init(text: "Old name")))
+check(waitSend == .send(waiting.marks, destination: "b") && waiting.marks[0].selectedText == "Old name" && !waiting.waitingForReads && waiting.sending,
+      "the last read arrives: sent at once, with its words")
+check(waiting.handle(.deadline(firstToken ?? -1)) == nil, "the wait's time then up: nothing sent twice")
+check(waiting.handle(.sendFinished(failed: [], warning: nil)) == .close, "and it closes once saved")
+
+var slowRead = Overlay(sessions: [sessionA], readsText: true)
+_ = slowRead.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+_ = slowRead.handle(.pointer(screen: 0, from: at(100, 100), to: at(180, 160), app: nil))
+let slowIDs = slowRead.marks.map(\.id)
+_ = slowRead.handle(.enriched(id: slowIDs[1], .init(text: "second")))
+let slowToken = waitToken(slowRead.handle(.send)) ?? -1
+check(slowToken >= 0 && slowRead.handle(.deadline(slowToken + 1)) == nil && slowRead.waitingForReads, "another wait's time: ignored")
+let deadlineSend = slowRead.handle(.deadline(slowToken))
+check(deadlineSend == .send(slowRead.marks, destination: "a") && slowRead.marks.map(\.selectedText) == [nil, "second"],
+      "the time up with a read still going: sent with what was read")
+check(slowRead.handle(.enriched(id: slowIDs[0], .init(text: "too late"))) == nil, "its words arriving mid-send: nothing more sent")
+_ = slowRead.handle(.sendFinished(failed: [slowIDs[0]], warning: nil))
+check(slowRead.marks.map(\.id) == [slowIDs[0]] && !slowRead.isPending(slowIDs[0]), "a mark that couldn't be saved stays, no longer waited for")
+check(slowRead.handle(.send) == .send(slowRead.marks, destination: "a"), "sent again: nothing to wait for, at once")
+
+var oldTimer = Overlay(sessions: [sessionA], readsText: true)
+_ = oldTimer.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+let oldToken = waitToken(oldTimer.handle(.send))
+let failedRead = oldTimer.handle(.enriched(id: oldTimer.marks[0].id, .init(text: nil)))
+check(failedRead == .send(oldTimer.marks, destination: "a") && oldTimer.marks[0].selectedText == nil, "a read that failed (no text) frees the wait: sent without words")
+_ = oldTimer.handle(.sendFinished(failed: [oldTimer.marks[0].id], warning: nil))
+_ = oldTimer.handle(.pointer(screen: 0, from: at(100, 100), to: at(180, 160), app: nil))
+let newToken = waitToken(oldTimer.handle(.send))
+check(newToken != nil && newToken != oldToken && oldTimer.handle(.deadline(oldToken ?? -1)) == nil && oldTimer.waitingForReads,
+      "an old wait's timer never sends a new one")
+
+var warned = Overlay(sessions: [], readsText: true)
+_ = warned.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+_ = warned.handle(.send)
+_ = warned.handle(.enriched(id: warned.marks[0].id, .init(text: "words")))
+check(warned.warning == "No agent session to send to: open one and mark again." && warned.marks[0].selectedText == "words",
+      "words arriving while a warning shows: the warning stays")
+var heldRead = Overlay(sessions: [sessionA], readsText: true)
+_ = heldRead.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+let heldToken = waitToken(heldRead.handle(.send))
+_ = heldRead.handle(.enriched(id: heldRead.marks[0].id, .init(text: "words")))
+_ = heldRead.handle(.sendFinished(failed: [], warning: "A is asking you something"))
+check(heldRead.handle(.deadline(heldToken ?? -1)) == nil && heldRead.warning == "A is asking you something", "the wait's timer firing after: the warning stays")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

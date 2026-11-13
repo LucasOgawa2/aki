@@ -78,7 +78,8 @@ final class Overlay {
         switch effect {
         case .close?: close()
         case let .send(marks, destination)?: send(marks, to: destination)
-        case nil: break
+        // Only asked for when the state reads text, which the next change turns on.
+        case .enrich?, .wait?, nil: break
         }
         if !closed { refresh() }
     }
