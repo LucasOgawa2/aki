@@ -20,7 +20,7 @@ flowchart LR
 ```
 
 1. **⇧⌘A** (or `aki://mark`, the menu, a ring) opens **marking**: a transparent overlay per screen over a capture of it.
-2. While you point, **probes** find what's there: on Chrome-family browsers Aki asks the page itself (an AppleScript `execute javascript` on a dedicated thread); elsewhere macOS Accessibility; text is read from the capture (Vision OCR).
+2. While you point, **probes** find what's there: on Chrome-family browsers Aki asks the page itself (an AppleScript `execute javascript` on a dedicated thread); elsewhere macOS Accessibility; text is read from the capture (Vision OCR). On Linux, `aki-mark` asks the page through Chrome's DevTools protocol (`AKI_CDP_URL`, 127.0.0.1 only, the same JS) once a mark is made, not while pointing; the mark stays a point.
 3. **Send** saves each mark to the **store** (JSON on disk, cross-process lock), with the session it's for, the text, an optional crop in `~/.aki/images`.
 4. The **sidebar** model sees the new marks, waits for you to stop and for the agent to be free, then **types the request** into that session's Orca tab.
 5. The **agent** reads the marks through the **MCP server** or the **`aki` CLI** (both talk to the local server), fixes them and marks each one done.
@@ -32,7 +32,7 @@ flowchart LR
 | `AkiCore` | Everything without UI: the store, the local HTTP server and API, the client the CLI and MCP use, finding agent sessions. Testable. | — |
 | `Aki` | The app *and* the `aki` command (same binary: `main.swift` picks by its arguments). | `AkiCore`, Sparkle |
 | `AkiChecks` | The checks, as an executable (`swift run AkiChecks`) — no Xcode needed. | `AkiCore` |
-| `AkiLinux` | Linux only: `aki-mark`, the marking overlay (GTK 4 on X11): the capture, one window per monitor, each area's words read by tesseract (one read at a time on a serial queue, never on GTK's thread; the send waits up to 3 s for them), saving and delivering through `AkiCore`'s `LinuxMarking`. `aki mark` execs it, so `aki` never links GTK. Swift 5 mode: GTK's C callbacks run on GLib's loop, which Swift 6 can't see as the main actor. | `AkiCore`, `CGtk`, `CX11` |
+| `AkiLinux` | Linux only: `aki-mark`, the marking overlay (GTK 4 on X11): the capture, one window per monitor, each area's words read by tesseract (one read at a time on a serial queue, never on GTK's thread; the send waits up to 3 s for them), the page under a mark on Chrome read through its DevTools (its own queue and socket, 1.5 s a read), saving and delivering through `AkiCore`'s `LinuxMarking`. `aki mark` execs it, so `aki` never links GTK. Swift 5 mode: GTK's C callbacks run on GLib's loop, which Swift 6 can't see as the main actor. | `AkiCore`, `CGtk`, `CX11` |
 | `CGtk`, `CX11` | Linux only: GTK 4 and Xlib as system modules (pkg-config `gtk4`, `x11`), with a `shim.h` each for what Swift can't call (the variadic JPEG save). Only `CX11` includes Xlib. | — |
 
 On Linux the package builds `AkiCore`, the `aki` command (`main.swift` and `MCP/`, no app), `aki-mark` (`AkiLinux`) and `AkiChecks`; swift-crypto stands in for CryptoKit there. Sparkle and the app never enter its build.
@@ -50,8 +50,11 @@ Sources/
     Client/                AkiClient (CLI/MCP → server), Waiter (aki wait), AnnotationText (what the agent reads)
     Sessions/              AgentSessions (claude/codex processes → sessions), ClaudeSessions, ClaudeStatus, Worktree, ProcFS (Linux)
     Marking/               Linux marking without UI: LinuxMarking (fields, crop, X11 pixels, monitors, window names), OCR (tesseract's arguments, PPM, TSV), OverlayState,
+                           WebSocket (a small RFC 6455 client and HTTP GET over a ByteStream), CDP (DevTools: endpoint, calls matched by id,
+                           tab and window, screen → page point), PageElement (the ported page JS and its answer), PageReader,
                            DeliveryPolicy, OrcaDelivery (orca-ide, AKI_DRY_DELIVER), GnomeShortcut
-  AkiLinux/                aki-mark (Linux): Capture (X11), Overlay (GTK 4 windows), TextReader (tesseract), GLib (signal, idle and timeout helpers)
+  AkiLinux/                aki-mark (Linux): Capture (X11), Overlay (GTK 4 windows), TextReader (tesseract), PageReading and Browser (DevTools),
+                           LoopbackStream (the POSIX socket to 127.0.0.1), GLib (signal, idle and timeout helpers)
   CGtk/, CX11/             GTK 4 and Xlib system modules
   Aki/
     main.swift             entry: the app, or the aki command (list, wait, done, mcp, serve…)
