@@ -51,6 +51,50 @@ public struct ProcFS: Sendable {
         return Date(timeIntervalSince1970: boot + ticks / ticksPerSecond)
     }
 
+    /// Descriptor targets readable by this user. Processes may exit during the scan.
+    public func openFiles(of pid: Int32) -> [String] {
+        let folder = root.appending(path: "\(pid)/fd")
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return [] }
+        return entries.compactMap { try? FileManager.default.destinationOfSymbolicLink(atPath: folder.appending(path: $0).path) }
+    }
+
+    /// lsof-compatible records, so the existing host/family preference stays shared.
+    public func listeningSockets() -> String {
+        var sockets: [String: (family: String, address: String, port: UInt16)] = [:]
+        for (file, family) in [("tcp", "IPv4"), ("tcp6", "IPv6")] {
+            for line in (read("net/" + file) ?? "").split(separator: "\n") {
+                let fields = line.split(whereSeparator: { $0.isWhitespace })
+                guard fields.count > 9, fields[3] == "0A" else { continue }
+                let local = fields[1].split(separator: ":")
+                guard local.count == 2, let port = UInt16(local[1], radix: 16) else { continue }
+                let hex = String(local[0])
+                let address: String
+                // This hex decoding assumes a little-endian host; the kernel writes in native byte order.
+                if family == "IPv4", hex.count == 8, let value = UInt32(hex, radix: 16) {
+                    address = value == 0 ? "*" : (0..<4).map { String((value >> ($0 * 8)) & 255) }.joined(separator: ".")
+                } else if family == "IPv6", hex.count == 32 {
+                    // /proc prints each native-endian 32-bit word. Preserve family even
+                    // for :: wildcard; tcp6 does not report the IPV6_V6ONLY option.
+                    if hex == String(repeating: "0", count: 32) { address = "[::]" }
+                    else if hex == "00000000000000000000000001000000" { address = "[::1]" }
+                    else { address = "[" + hex + "]" }
+                } else { continue }
+                sockets[String(fields[9])] = (family, address, port)
+            }
+        }
+        guard !sockets.isEmpty, let entries = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return "" }
+        var records: [String] = []
+        for entry in entries.sorted() {
+            guard let pid = Int32(entry) else { continue }
+            for target in openFiles(of: pid) {
+                guard target.hasPrefix("socket:["), target.hasSuffix("]"),
+                      let socket = sockets[String(target.dropFirst(8).dropLast())] else { continue }
+                records.append("p\(pid)\nt\(socket.family)\nn\(socket.address):\(socket.port)\n")
+            }
+        }
+        return records.joined()
+    }
+
     public struct CPUSample: Sendable {
         public let startTicks: UInt64
         public let ticks: UInt64

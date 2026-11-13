@@ -3,6 +3,9 @@ import Foundation
 #if os(Linux)
 import Glibc
 #endif
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // Run with `swift run AkiChecks`. Exits 1 if any check fails.
 
@@ -171,7 +174,7 @@ check(
     "oversized body → 413")
 
 let lsof = Process()
-lsof.executableURL = URL(filePath: "/usr/sbin/lsof")
+lsof.executableURL = URL(filePath: Command.lsof)
 lsof.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN"]
 let pipe = Pipe()
 lsof.standardOutput = pipe
@@ -350,6 +353,13 @@ func oversizedUploadReply() -> (sent: Bool, response: String, readError: Int32) 
 let rejectedUpload = oversizedUploadReply()
 check(rejectedUpload.sent && rejectedUpload.readError == 0 && rejectedUpload.response.hasPrefix("HTTP/1.1 413 "),
       "oversized streaming upload receives 413 without reset (read errno \(rejectedUpload.readError))")
+check(Worktree.server(ofPort: Int(port))?.pid == getpid(), "procfs finds the check process's live listening socket")
+check(Worktree.ports(servedFrom: FileManager.default.currentDirectoryPath).contains(Int(port)), "procfs includes a live server in worktree port filtering")
+let liveLog = temp.appending(path: "rollout-live.jsonl")
+_ = FileManager.default.createFile(atPath: liveLog.path, contents: Data())
+let liveLogHandle = try FileHandle(forReadingFrom: liveLog)
+check(CodexSessions.openLogs(of: [getpid()])[getpid()]?.contains(liveLog) == true, "Codex log discovery uses the process's real open descriptors")
+try liveLogHandle.close()
 #endif
 server.stop()
 
@@ -675,9 +685,16 @@ if ProcessInfo.processInfo.environment["AKI_BACKFILL_BENCH"] == "1" {
     let firstPass = Date().timeIntervalSince(started)
     bench.backfill()
     var usage = rusage()
+    #if os(macOS)
     getrusage(RUSAGE_SELF, &usage)
+    let peak = usage.ru_maxrss / 1_048_576
+    #else
+    // Linux counts it in kB.
+    getrusage(RUSAGE_SELF.rawValue, &usage)
+    let peak = usage.ru_maxrss / 1024
+    #endif
     print(String(format: "  bench: first pass %.1f s, backfill %.1f s, peak %d MB, codex days %d",
-                 firstPass, Date().timeIntervalSince(started) - firstPass, usage.ru_maxrss / 1_048_576, bench.daily(agent: "codex").count))
+                 firstPass, Date().timeIntervalSince(started) - firstPass, peak, bench.daily(agent: "codex").count))
     try? FileManager.default.removeItem(at: benchHome)
 }
 
@@ -700,6 +717,7 @@ check(UsageLimits.parseCodex(line: Data(codexLine.replacingOccurrences(of: #"{"t
                               updated: .distantPast)?.updated == Date(timeIntervalSince1970: 1791665845.894),
       "a Codex report dated by its own time")
 
+#if os(macOS)
 // The Mac's screenshots: found by their name (any language) or macOS's own mark, nothing else.
 let shots = FileManager.default.temporaryDirectory.appending(path: "aki-shots-\(UUID().uuidString)")
 try? FileManager.default.createDirectory(at: shots.appending(path: "inside"), withIntermediateDirectories: true)
@@ -722,6 +740,7 @@ check(Screenshots.trash(oldOnes).count == 1 && !FileManager.default.fileExists(a
 // Out of the Trash again: the check leaves nothing behind.
 for item in oldOnes { try? FileManager.default.removeItem(at: FileManager.default.homeDirectoryForCurrentUser.appending(path: ".Trash/\(item.url.lastPathComponent)")) }
 try? FileManager.default.removeItem(at: shots)
+#endif
 
 // Codex is working while its log has a turn open.
 check(CodexSessions.turnOpen(#"{"payload":{"type":"task_complete"}}\n{"payload":{"type":"task_started"}}"#) == true, "a turn just started is open")
@@ -758,6 +777,14 @@ check(!ClaudeAppUsage.isUsage("1/0/https://claude.ai/api/organizations/abc/chat_
 let appUsage = ClaudeAppUsage.parse(Data(#"{"five_hour":{"utilization":12.4,"resets_at":"2026-10-15T22:00:00.123+00:00"},"seven_day":{"utilization":29,"resets_at":"2026-10-19T12:00:00Z"}}"#.utf8), updated: Date())
 check(appUsage?.week?.percent == 29 && appUsage?.fiveHour?.percent == 12 && appUsage?.week?.resets != nil && appUsage?.fiveHour?.resets != nil, "claude app usage parsed")
 check(ClaudeAppUsage.parse(Data(#"{"other":1}"#.utf8), updated: Date()) == nil, "no windows, no reading")
+#if os(Linux)
+// Where the Claude app keeps its cache on Linux: XDG_CONFIG_HOME only when it is an absolute path.
+let xdgHome = URL(filePath: "/home/someone")
+check(ClaudeAppUsage.configHome(environment: ["XDG_CONFIG_HOME": "/opt/cfg"], home: xdgHome).path == "/opt/cfg", "an absolute XDG_CONFIG_HOME is used")
+check(ClaudeAppUsage.configHome(environment: ["XDG_CONFIG_HOME": "cfg"], home: xdgHome).path == "/home/someone/.config", "a relative XDG_CONFIG_HOME is ignored")
+check(ClaudeAppUsage.configHome(environment: ["XDG_CONFIG_HOME": ""], home: xdgHome).path == "/home/someone/.config", "an empty XDG_CONFIG_HOME is ignored")
+check(ClaudeAppUsage.configHome(environment: [:], home: xdgHome).path == "/home/someone/.config", "no XDG_CONFIG_HOME falls back to ~/.config")
+#endif
 
 // A message pasted into a Claude app's Code session: found in that session's transcript.
 do {
@@ -888,6 +915,23 @@ check(procFS.environment(of: 4245)?["EMPTY"] == "", "an empty environment value 
 check(AgentSessions.terminalHandle(inEnvironment: ["ORCA_TERMINAL_HANDLE": "term_linux"]) == "term_linux", "Linux Orca identity uses the injected environment")
 check(AgentSessions.terminalHandle(inEnvironment: ["ORCA_TERMINAL_HANDLE": ""]) == nil, "an empty Linux Orca handle is absent")
 check(AgentSessions.terminalHandle(inEnvironment: [:]) == nil, "a missing Linux Orca handle is absent")
+// Listening sockets and descriptors from a proc fixture, without invoking lsof.
+let net = proc.appending(path: "net")
+try FileManager.default.createDirectory(at: net, withIntermediateDirectories: true)
+try Data("  sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n 0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 800 1\n 1: 00000000:1F91 00000000:0000 0A 0 0 0 1000 0 801\n 2: 0100007F:1F92 00000000:0000 01 0 0 0 1000 0 802\n 3: 0100007F:1F93 00000000:0000 0A 0 0 0 1001 0 803\n".utf8).write(to: net.appending(path: "tcp"))
+try Data("  sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n 0: 00000000000000000000000001000000:1F94 0 0A 0 0 0 1000 0 804\n 1: 00000000000000000000000000000000:1F95 0 0A 0 0 0 1000 0 805\n".utf8).write(to: net.appending(path: "tcp6"))
+let descriptors = proc.appending(path: "4242/fd")
+try FileManager.default.createDirectory(at: descriptors, withIntermediateDirectories: true)
+for inode in [800, 801, 802, 804, 805] {
+    try FileManager.default.createSymbolicLink(atPath: descriptors.appending(path: "\(inode)").path, withDestinationPath: "socket:[\(inode)]")
+}
+try FileManager.default.createSymbolicLink(atPath: descriptors.appending(path: "9").path, withDestinationPath: "/logs/rollout-fixture.jsonl")
+let fixturePorts = Worktree.listeningPorts(lsof: procFS.listeningSockets(), host: "localhost")
+check(fixturePorts[8080] == 4242 && fixturePorts[8081] == 4242 && fixturePorts[8084] == 4242 && fixturePorts[8085] == 4242,
+      "procfs discovers IPv4/IPv6 loopback and wildcard listeners")
+check(fixturePorts[8082] == nil && fixturePorts[8083] == nil, "non-listening sockets and unreadable owners stay out")
+check(procFS.openFiles(of: 4242).contains("/logs/rollout-fixture.jsonl"), "procfs reads open file links")
+check(procFS.openFiles(of: 9999).isEmpty, "unreadable descriptor directories are empty")
 // CPU snapshots use the same stat fixture as parent/start-time discovery.
 let cpuProc = ProcFS(root: proc, ticksPerSecond: 100)
 let cpuBefore = cpuProc.cpuSample(of: 4244, at: 10)!

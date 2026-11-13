@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Talks to the running Aki server with the user's token. Used by the CLI and the MCP server.
 public struct AkiClient: Sendable {
