@@ -146,13 +146,14 @@ public final class HTTPServer: @unchecked Sendable {
                 close(connection)
                 return
             case .invalid(let status, let reason):
-                Self.send(.error(status, reason), on: connection)
+                Self.send(.error(status, reason), on: connection, drainUpload: true)
                 return
             }
         }
     }
 
-    private static func send(_ response: HTTPResponse, on connection: Int32) {
+    private static func send(_ response: HTTPResponse, on connection: Int32, drainUpload: Bool = false) {
+        defer { close(connection) }
         let data = response.serialized()
         data.withUnsafeBytes { raw in
             var offset = 0
@@ -164,7 +165,29 @@ public final class HTTPServer: @unchecked Sendable {
                 offset += sent
             }
         }
-        close(connection)
+        if drainUpload {
+            // FIN lets the client finish reading; drain unread upload bytes to avoid RST.
+            shutdown(connection, Int32(SHUT_WR))
+            drain(connection)
+        }
+    }
+
+    private static func drain(_ connection: Int32) {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
+        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { return }
+            let milliseconds = Int32((deadline - now + 999_999) / 1_000_000)
+            var descriptor = pollfd(fd: connection, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, milliseconds)
+            if ready < 0, errno == EINTR { continue }
+            guard ready > 0 else { return }
+            // Never inherit the request's 30-second receive timeout after poll.
+            let count = recv(connection, &chunk, chunk.count, Int32(MSG_DONTWAIT))
+            if count < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
+            guard count > 0 else { return }
+        }
     }
 
     private static func error() -> POSIXError {

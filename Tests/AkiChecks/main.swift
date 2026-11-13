@@ -191,6 +191,49 @@ lsof.waitUntilExit()
 let listening = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 check(listening.contains("127.0.0.1:\(port)") && !listening.contains("*:\(port)"), "listens on 127.0.0.1 only")
 #if os(Linux)
+// Send well beyond one server read before reading the rejection, like an upload client.
+func oversizedUploadReply() -> (sent: Bool, response: String, readError: Int32) {
+    let client = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+    guard client >= 0 else { return (false, "", errno) }
+    defer { close(client) }
+    var timeout = timeval(tv_sec: 2, tv_usec: 0)
+    guard setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
+          setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+        return (false, "", errno)
+    }
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = UInt32(INADDR_LOOPBACK).bigEndian
+    let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    guard connected == 0 else { return (false, "", errno) }
+    let bodySize = 512 * 1024
+    let upload = Array(("POST /api/annotations HTTP/1.1\r\nHost: localhost\r\nContent-Length: \(bodySize)\r\n\r\n" + String(repeating: "x", count: bodySize)).utf8)
+    let sentAll = upload.withUnsafeBytes { raw -> Bool in
+        var offset = 0
+        while offset < raw.count {
+            let count = Glibc.send(client, raw.baseAddress! + offset, raw.count - offset, Int32(MSG_NOSIGNAL))
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { return false }
+            offset += count
+        }
+        return true
+    }
+    shutdown(client, Int32(SHUT_WR))
+    var reply = Data()
+    var chunk = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = recv(client, &chunk, chunk.count, 0)
+        if count < 0, errno == EINTR { continue }
+        if count <= 0 { return (sentAll, String(decoding: reply, as: UTF8.self), count < 0 ? errno : 0) }
+        reply.append(contentsOf: chunk[..<count])
+    }
+}
+let rejectedUpload = oversizedUploadReply()
+check(rejectedUpload.sent && rejectedUpload.readError == 0 && rejectedUpload.response.hasPrefix("HTTP/1.1 413 "),
+      "oversized streaming upload receives 413 without reset (read errno \(rejectedUpload.readError))")
 check(Worktree.server(ofPort: Int(port))?.pid == getpid(), "procfs finds the check process's live listening socket")
 check(Worktree.ports(servedFrom: FileManager.default.currentDirectoryPath).contains(Int(port)), "procfs includes a live server in worktree port filtering")
 let liveLog = temp.appending(path: "rollout-live.jsonl")
