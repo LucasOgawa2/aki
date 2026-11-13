@@ -1,5 +1,7 @@
+#if os(macOS)
 import ApplicationServices
 import CoreGraphics
+#endif
 import Foundation
 
 /// The desktop apps of the agents (Codex's and Claude's own apps): no terminal, so Aki
@@ -116,6 +118,7 @@ public enum DesktopApps {
             titlesLock.withLock { titles[app.pid] = title }
             return title
         }
+        #if os(macOS)
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         let generic = ["chatgpt", "codex", "claude", ""]
         if let title = windows.first(where: {
@@ -124,6 +127,7 @@ public enum DesktopApps {
         })?[kCGWindowName as String] as? String {
             return title.trimmingCharacters(in: .whitespaces)
         }
+        #endif
         // Neither shows now (its page is described only around a delivery): the last seen.
         return nil
     }
@@ -135,6 +139,7 @@ public enum DesktopApps {
     nonisolated(unsafe) private static var titles = [Int32: String]()
     private static let titlesLock = NSLock()
 
+    #if os(macOS)
     /// Asks an Electron app to describe its page to Accessibility (Claude's by the first
     /// flag, Codex's by the second), or to stop. Only while delivering: described, the app
     /// rebuilds that at every word of an answer and slows the whole Mac down.
@@ -177,6 +182,12 @@ public enum DesktopApps {
         }
         return nil
     }
+    #else
+    // No such apps on Linux (`running` finds none): nothing to describe or read.
+    public static func expose(_ pid: Int32, _ on: Bool) {}
+    public static func concealAll() {}
+    public static func pageTitle(_ pid: Int32) -> String? { nil }
+    #endif
 
     /// The app is answering: its processes (the page's renderer above all) busy, from the
     /// same process list. Cheap: the app is never asked anything.
