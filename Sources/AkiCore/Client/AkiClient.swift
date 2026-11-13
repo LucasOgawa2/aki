@@ -11,7 +11,11 @@ public struct AkiClient: Sendable {
 
         public var description: String {
             switch self {
+            #if os(Linux)
+            case .serverDown(let port): "Aki isn't running (nothing on 127.0.0.1:\(port)). Run `aki serve`."
+            #else
             case .serverDown(let port): "Aki isn't running (nothing on 127.0.0.1:\(port)). Open Aki.app or run `aki serve`."
+            #endif
             case .http(let status, let message): "server answered \(status): \(message)"
             }
         }
