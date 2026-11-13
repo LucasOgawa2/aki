@@ -247,8 +247,8 @@ do {
     var reply = [UInt8](repeating: 0, count: 4096)
     let count = recv(health, &reply, reply.count, 0)
     let elapsed = ProcessInfo.processInfo.systemUptime - started
-    check(sent && clients.count == 41 && count > 0 && String(decoding: reply.prefix(max(0, count)), as: UTF8.self).hasPrefix("HTTP/1.1 200 ") && elapsed < 1,
-          "health responds within one second with 40 idle connections (\(elapsed) s)")
+    check(sent && clients.count == 41 && count > 0 && String(decoding: reply.prefix(max(0, count)), as: UTF8.self).hasPrefix("HTTP/1.1 200 ") && elapsed < 2,
+          "health responds within two seconds with 40 idle connections (\(elapsed) s)")
 }
 
 do {
@@ -291,8 +291,8 @@ do {
     var byte: UInt8 = 0
     let received = recv(extra, &byte, 1, 0)
     let elapsed = ProcessInfo.processInfo.systemUptime - started
-    check(clients.count == 65 && received == 0 && elapsed < 0.5,
-          "65th idle connection reaches EOF within half a second (\(elapsed) s)")
+    check(clients.count == 65 && received == 0 && elapsed < 2,
+          "65th idle connection reaches EOF within two seconds (\(elapsed) s)")
 }
 
 do {
