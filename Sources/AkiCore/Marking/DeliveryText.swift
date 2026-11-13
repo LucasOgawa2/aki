@@ -44,6 +44,11 @@ extension LinuxMarking {
         link.hasSuffix(" (deleted)") ? String(link.dropLast(" (deleted)".count)) : link
     }
 
+    /// `name` in the folder of `executable`: `aki` and `aki-mark` are installed side by side.
+    public static func sibling(_ name: String, of executable: String) -> String {
+        URL(filePath: executable).deletingLastPathComponent().appending(path: name).path
+    }
+
     /// Single quotes for a POSIX shell (and GLib's `g_shell_parse_argv`), `'` as `'\''`.
     public static func shellQuoted(_ text: String) -> String {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"

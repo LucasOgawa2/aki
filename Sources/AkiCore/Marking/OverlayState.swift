@@ -47,6 +47,8 @@ extension LinuxMarking {
             case pointer(screen: Int, from: Point, to: Point, app: AppInfo?)
             case draft(String)
             case escape, undo, nextDestination, previousDestination, send
+            /// Enter without Ctrl (the Mac's field): a note queues its mark; none (or no card) sends.
+            case commit
             case destination(Int)
             case sessionsChanged([AgentTerminal])
             case sendFinished(failed: [UUID], warning: String?)
@@ -107,6 +109,13 @@ extension LinuxMarking {
                 sessions = open
                 for session in open { names[session.id] = session.name }
                 if destination == nil, marks.isEmpty { destination = open.first?.id }
+            case .commit:
+                guard !sending else { return nil }
+                if editing != nil, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    commitDraft()
+                    return nil
+                }
+                return handle(.send)
             case .send:
                 guard !sending else { return nil }
                 commitDraft()

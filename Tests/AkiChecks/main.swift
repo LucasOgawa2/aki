@@ -1451,5 +1451,71 @@ _ = FileManager.default.createFile(atPath: orcaBin.appending(path: "gsettings").
 check(GnomeShortcut.gsettings(path: "/nonexistent") == nil && GnomeShortcut.gsettings(path: "/nonexistent:" + orcaBin.path) == orcaBin.appending(path: "gsettings").path,
       "gsettings found on PATH")
 
+print("linux marking: Enter, root and monitors, window names, dry sessions")
+var entering = Overlay(sessions: [sessionA])
+_ = entering.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
+_ = entering.handle(.draft("  queue me "))
+check(entering.handle(.commit) == nil && entering.editing == nil && entering.marks.at(0)?.comment == "queue me" && !entering.sending,
+      "Enter with a note: it goes to the queue, nothing sent")
+let enterSends = entering.handle(.commit)
+check(enterSends == .send(entering.marks, destination: "a") && entering.sending, "Enter with no card open: sends the queue")
+var enterEmpty = Overlay(sessions: [sessionA])
+_ = enterEmpty.handle(.pointer(screen: 0, from: at(10, 10), to: at(10, 10), app: nil))
+_ = enterEmpty.handle(.draft("   "))
+check(enterEmpty.handle(.commit) == .send(enterEmpty.marks, destination: "a") && enterEmpty.marks.at(0)?.comment == "",
+      "Enter on a card with an empty (blank) note: sends, the mark with it")
+
+// This machine's monitors, in GDK's order (not left to right): eDP-1 on the right, HDMI-1-0 on the left.
+let eDP = LinuxMarking.Monitor(x: 1920, y: 0, width: 1920, height: 1080)
+let hdmi = LinuxMarking.Monitor(x: 0, y: 0, width: 1920, height: 1080)
+let monitors = [eDP, hdmi]
+check(LinuxMarking.monitor(containing: at(2500, 300), in: monitors) == 0 && LinuxMarking.monitor(containing: at(100, 900), in: monitors) == 1,
+      "a root point's monitor is its place in GDK's list, not left to right")
+check(LinuxMarking.monitor(containing: at(1920, 0), in: monitors) == 0 && LinuxMarking.monitor(containing: at(1919.5, 0), in: monitors) == 1,
+      "on the edge between them: the one it starts (right edge excluded)")
+check(LinuxMarking.monitor(containing: at(4000, 10), in: monitors) == nil && LinuxMarking.monitor(containing: at(10, 1080), in: monitors) == nil,
+      "outside every monitor: none")
+check(LinuxMarking.rootRect(of: .init(x: 100, y: 50, width: 300, height: 200), on: eDP) == .init(x: 2020, y: 50, width: 300, height: 200)
+      && LinuxMarking.rootRect(of: .init(x: 100, y: 50, width: 0, height: 0), on: hdmi) == .init(x: 100, y: 50, width: 0, height: 0),
+      "a mark's local rect back in root pixels, for the crop")
+let hidpi = LinuxMarking.Monitor(x: 1280, y: 0, width: 1280, height: 720, scale: 2)
+check(LinuxMarking.devicePoint(at(10, 20.5), on: hidpi) == at(20, 41) && LinuxMarking.devicePoint(at(10, 20), on: eDP) == at(10, 20),
+      "a window point in device pixels: times the scale")
+check(LinuxMarking.rootRect(of: .init(x: 20, y: 40, width: 100, height: 60), on: hidpi) == .init(x: 2580, y: 40, width: 100, height: 60),
+      "scale 2: the monitor's origin in device pixels too")
+check(LinuxMarking.devicePoint(at(-30, 1200), on: eDP) == at(0, 1079) && LinuxMarking.devicePoint(at(5000, -1), on: hidpi) == at(2559, 0),
+      "a drag that leaves its monitor stops at its edge (a mark never spans two)")
+check(LinuxMarking.devicePixels(of: hidpi) == .init(width: 2560, height: 1440) && LinuxMarking.devicePixels(of: hdmi) == .init(width: 1920, height: 1080),
+      "a monitor's size in the capture's pixels")
+
+check(LinuxMarking.windowClass(fromWMClass: Array("google-chrome\0Google-chrome\0".utf8)) == "Google-chrome", "WM_CLASS: the class, not the instance")
+check(LinuxMarking.windowClass(fromWMClass: Array("xterm\0XTerm".utf8)) == "XTerm", "WM_CLASS without its last NUL")
+check(LinuxMarking.windowClass(fromWMClass: Array("solo\0".utf8)) == "solo" && LinuxMarking.windowClass(fromWMClass: []) == nil
+      && LinuxMarking.windowClass(fromWMClass: Array("\0\0".utf8)) == nil, "only an instance: that; nothing: none")
+check(LinuxMarking.windowTitle(fromProperty: Array("Inbox — Mozilla Firefox".utf8)) == "Inbox — Mozilla Firefox", "_NET_WM_NAME is UTF-8")
+check(LinuxMarking.windowTitle(fromProperty: Array("title\0".utf8)) == "title" && LinuxMarking.windowTitle(fromProperty: []) == nil
+      && LinuxMarking.windowTitle(fromProperty: [0x61, 0xFF, 0x62]) == "a\u{FFFD}b", "a trailing NUL dropped, empty is none, bad bytes replaced")
+
+let fakeSessionsHome = AkiHome(url: temp.appending(path: "dry-sessions-home"))
+try FileManager.default.createDirectory(at: fakeSessionsHome.url, withIntermediateDirectories: true)
+try Data(#"[{"id":"s1","name":"SITE","worktree":"/w/site","orcaHandle":"term_x","state":"waiting","agent":"codex","lastSent":20},{"id":"s2","name":"API","worktree":"/w/api"}]"#.utf8)
+    .write(to: fakeSessionsHome.url.appending(path: "dry-sessions.json"))
+let realOne = [LinuxMarking.terminal(id: "real", name: "REAL", worktree: "/real")]
+let fakeSessions = LinuxMarking.sessions(environment: ["AKI_DRY_DELIVER": "1"], home: fakeSessionsHome) { realOne }
+check(fakeSessions == [
+    LinuxMarking.terminal(id: "s1", agent: .codex, name: "SITE", worktree: "/w/site", state: .waiting, orcaHandle: "term_x", lastSent: Date(timeIntervalSince1970: 20)),
+    LinuxMarking.terminal(id: "s2", name: "API", worktree: "/w/api"),
+], "dry: the sessions come from $AKI_HOME/dry-sessions.json, never the real ones")
+check(LinuxMarking.sessions(environment: [:], home: fakeSessionsHome) { realOne } == realOne, "not dry: that file is ignored, the real listing")
+try Data("[]".utf8).write(to: fakeSessionsHome.url.appending(path: "dry-sessions.json"))
+check(LinuxMarking.sessions(environment: ["AKI_DRY_DELIVER": "1"], home: fakeSessionsHome) { realOne }.isEmpty, "dry with an empty list: zero sessions")
+try Data("{nope".utf8).write(to: fakeSessionsHome.url.appending(path: "dry-sessions.json"))
+check(LinuxMarking.sessions(environment: ["AKI_DRY_DELIVER": "1"], home: fakeSessionsHome) { realOne }.isEmpty
+      && LinuxMarking.sessions(environment: ["AKI_DRY_DELIVER": "1"], home: AkiHome(url: temp.appending(path: "none"))) { realOne }.isEmpty,
+      "dry with no file or a broken one: zero sessions, still not the real ones")
+
+check(LinuxMarking.sibling("aki-mark", of: "/home/u/.local/bin/aki") == "/home/u/.local/bin/aki-mark"
+      && LinuxMarking.sibling("aki", of: "/opt/aki dir/aki-mark") == "/opt/aki dir/aki", "aki and aki-mark find each other in the same folder")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)
