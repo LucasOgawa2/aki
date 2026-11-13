@@ -1740,5 +1740,117 @@ _ = heldRead.handle(.enriched(id: heldRead.marks[0].id, .init(text: "words")))
 _ = heldRead.handle(.sendFinished(failed: [], warning: "A is asking you something"))
 check(heldRead.handle(.deadline(heldToken ?? -1)) == nil && heldRead.warning == "A is asking you something", "the wait's timer firing after: the warning stays")
 
+print("linux marking: websocket")
+typealias WS = LinuxMarking.WebSocket
+check(WS.acceptValue(forKey: "dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "the accept value is RFC 6455's own example")
+let opening = String(decoding: WS.handshake(host: "127.0.0.1", port: 9333, path: "/devtools/browser/abc", key: "dGhlIHNhbXBsZSBub25jZQ=="), as: UTF8.self)
+check(opening.hasPrefix("GET /devtools/browser/abc HTTP/1.1\r\n") && opening.contains("\r\nHost: 127.0.0.1:9333\r\n")
+      && opening.contains("\r\nUpgrade: websocket\r\n") && opening.contains("\r\nConnection: Upgrade\r\n")
+      && opening.contains("\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n") && opening.contains("\r\nSec-WebSocket-Version: 13\r\n")
+      && opening.hasSuffix("\r\n\r\n"), "the opening request asks for the upgrade with its key")
+check(!opening.lowercased().contains("origin:"), "and sends no Origin (Chrome refuses one it wasn't told to allow)")
+let agreed = Array("HTTP/1.1 101 WebSocket Protocol Handshake\r\nUpgrade: WebSocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n".utf8)
+check(WS.readHandshake(agreed, key: "dGhlIHNhbXBsZSBub25jZQ==") == .accepted(leftover: []), "101 with the right accept: open")
+check(WS.readHandshake(agreed + [0x81, 0x00], key: "dGhlIHNhbXBsZSBub25jZQ==") == .accepted(leftover: [0x81, 0x00]),
+      "the bytes after the headers are kept (the first frame may come with them)")
+check(WS.readHandshake(Array(agreed.prefix(40)), key: "dGhlIHNhbXBsZSBub25jZQ==") == .incomplete, "headers not all there yet: wait")
+check({ if case .refused = WS.readHandshake(agreed, key: "AAAAAAAAAAAAAAAAAAAAAA==") { true } else { false } }(), "another key's accept: refused")
+let forbidden = Array("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".utf8)
+check(WS.readHandshake(forbidden, key: "dGhlIHNhbXBsZSBub25jZQ==") == .refused("HTTP/1.1 403 Forbidden"), "not 101: refused, with the status line")
+let noUpgrade = Array("HTTP/1.1 101 Switching\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n".utf8)
+check({ if case .refused = WS.readHandshake(noUpgrade, key: "dGhlIHNhbXBsZSBub25jZQ==") { true } else { false } }(), "101 without Upgrade: websocket: refused")
+
+check(WS.frame(.text, payload: Array("Hello".utf8), mask: [0x37, 0xfa, 0x21, 0x3d]) == [0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58],
+      "a masked text frame is RFC 6455's example byte for byte")
+let mid = WS.frame(.text, payload: [UInt8](repeating: 0x61, count: 256), mask: [0, 0, 0, 0])
+check(mid.prefix(4) == [0x81, 0xFE, 0x01, 0x00] && mid.count == 4 + 4 + 256, "256 bytes: a 16-bit length")
+let big = WS.frame(.text, payload: [UInt8](repeating: 0x61, count: 65536), mask: [0, 0, 0, 0])
+check(big.prefix(10) == [0x81, 0xFF, 0, 0, 0, 0, 0, 1, 0, 0] && big.count == 10 + 4 + 65536, "64 KiB: a 64-bit length")
+check(WS.frame(.pong, payload: [1, 2], mask: [0, 0, 0, 0]) == [0x8A, 0x82, 0, 0, 0, 0, 1, 2], "a pong frame")
+
+func incoming(_ chunks: [[UInt8]]) -> (messages: [WS.Incoming], failure: WS.Failure?) {
+    var reader = WS.Reader(), messages: [WS.Incoming] = []
+    do {
+        for chunk in chunks {
+            reader.feed(chunk)
+            while let message = try reader.next() { messages.append(message) }
+        }
+    } catch let failure as WS.Failure { return (messages, failure) } catch { return (messages, .io("\(error)")) }
+    return (messages, nil)
+}
+check(incoming([[0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]]).messages == [.text("Hello")], "an unmasked text frame from the server")
+check(incoming([[0x81], [0x05, 0x48, 0x65], [0x6c, 0x6c, 0x6f]]).messages == [.text("Hello")], "the same frame in pieces")
+check(incoming([[0x01, 0x03, 0x48, 0x65, 0x6c, 0x89, 0x00, 0x80, 0x02, 0x6c, 0x6f]]).messages == [.ping([]), .text("Hello")],
+      "a message in fragments, a ping between them: the ping first, then the whole text")
+let wide = [UInt8](repeating: 0x62, count: 70000)
+check(incoming([[0x81, 0x7F, 0, 0, 0, 0, 0, 1, 0x11, 0x70] + wide]).messages == [.text(String(repeating: "b", count: 70000))], "a 64-bit length read")
+check(incoming([[0x81, 0x7E, 0x01, 0x00] + [UInt8](repeating: 0x63, count: 256)]).messages == [.text(String(repeating: "c", count: 256))], "a 16-bit length read")
+check(incoming([[0x89, 0x02, 7, 8], [0x8A, 0x00], [0x88, 0x02, 0x03, 0xE8]]).messages == [.ping([7, 8]), .pong, .close], "ping, pong and close")
+check(incoming([[0x82, 0x01, 0x00]]).failure == .binary, "a binary message: an error (Chrome's are text)")
+check(incoming([[0x83, 0x00]]).failure == .unknownOpcode(3), "an unknown opcode: an error")
+check(incoming([[0x80, 0x01, 0x61]]).failure == .badContinuation, "a continuation with nothing begun: an error")
+check(incoming([[0x01, 0x01, 0x61, 0x81, 0x01, 0x62]]).failure == .badContinuation, "a new text while one is in fragments: an error")
+check(incoming([[0x81, 0x81, 1, 2, 3, 4, 0x61]]).failure == .masked, "a masked frame from the server: an error")
+check(incoming([[0x81, 0x7F, 0, 0, 0, 0, 0, 0x40, 0, 1]]).failure == .tooLarge, "a frame over 4 MB: refused before its bytes come")
+check(incoming([[0x01, 0x7F, 0, 0, 0, 0, 0, 0x30, 0, 0] + [UInt8](repeating: 0x61, count: 0x300000),
+                [0x80, 0x7F, 0, 0, 0, 0, 0, 0x20, 0, 0]]).failure == .tooLarge, "fragments adding up past 4 MB: refused")
+check(incoming([[0x81, 0x02, 0xC3, 0x28]]).failure == .notUTF8, "text that isn't UTF-8: an error")
+
+print("linux marking: http")
+let get = String(decoding: LinuxMarking.MiniHTTP.get(host: "127.0.0.1", port: 9333, path: "/json/version"), as: UTF8.self)
+check(get == "GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:9333\r\nConnection: close\r\n\r\n", "the GET for /json/version")
+let okBody = Array("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\ncontent-length: 7\r\n\r\n{\"a\":1}".utf8)
+check(LinuxMarking.MiniHTTP.parse(okBody, closed: false) == .response(status: 200, body: Array("{\"a\":1}".utf8)), "a body as long as its Content-Length")
+check(LinuxMarking.MiniHTTP.parse(Array(okBody.dropLast(2)), closed: false) == .incomplete, "a body still coming: wait")
+check(LinuxMarking.MiniHTTP.parse(Array(okBody.dropLast(2)), closed: true) == .malformed, "closed before the whole body: malformed")
+let noLength = Array("HTTP/1.1 200 OK\r\n\r\n{}".utf8)
+check(LinuxMarking.MiniHTTP.parse(noLength, closed: false) == .incomplete && LinuxMarking.MiniHTTP.parse(noLength, closed: true) == .response(status: 200, body: Array("{}".utf8)),
+      "no length: the body ends where the connection does")
+check(LinuxMarking.MiniHTTP.parse(Array("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".utf8), closed: false) == .response(status: 404, body: []), "the status as it came")
+check(LinuxMarking.MiniHTTP.parse(Array("garbage\r\n\r\n".utf8), closed: false) == .malformed, "no status line: malformed")
+check(LinuxMarking.MiniHTTP.parse(Array("HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\n\r\n".utf8), closed: false) == .malformed, "a length over 4 MB: malformed")
+
+print("linux marking: websocket connection")
+/// A deadline a second from whenever it's asked (the scripted ones never wait).
+var soon: ContinuousClock.Instant { .now + .seconds(1) }
+let rfcKey = "dGhlIHNhbXBsZSBub25jZQ=="
+func failure(_ body: () throws -> Void) -> WS.Failure? {
+    do { try body() } catch let f as WS.Failure { return f } catch { return .io("\(error)") }
+    return nil
+}
+let wsStream = ScriptedStream([.bytes(Array(agreed.prefix(30))), .bytes(Array(agreed.dropFirst(30)) + [0x89, 0x01, 0x2A]), .bytes([0x81, 0x02, 0x6F, 0x6B])])
+let ws = try? LinuxMarking.WebSocketConnection(stream: wsStream, host: "127.0.0.1", port: 9333, path: "/devtools/browser/x", until: soon,
+                                               key: rfcKey, mask: { [1, 2, 3, 4] })
+check(ws != nil && wsStream.written.first == WS.handshake(host: "127.0.0.1", port: 9333, path: "/devtools/browser/x", key: rfcKey),
+      "connecting writes the opening request and reads the 101 in pieces")
+check((try? ws?.receive(until: soon)) == "ok" && wsStream.written.dropFirst().first == WS.frame(.pong, payload: [0x2A], mask: [1, 2, 3, 4]),
+      "a ping before the message: answered with a pong of the same bytes, then the message")
+try? ws?.send("{\"id\":1}", until: soon)
+check(wsStream.written.last == WS.frame(.text, payload: Array("{\"id\":1}".utf8), mask: [1, 2, 3, 4]), "sending writes one masked text frame")
+check(failure { _ = try ws?.receive(until: soon) } == .closed, "the server gone: closed")
+let leftoverStream = ScriptedStream([.bytes(agreed + [0x81, 0x01, 0x61])])
+let leftover = try? LinuxMarking.WebSocketConnection(stream: leftoverStream, host: "127.0.0.1", port: 1, path: "/", until: soon, key: rfcKey)
+check((try? leftover?.receive(until: soon)) == "a", "a frame that came with the 101: read")
+let closing = ScriptedStream([.bytes(agreed + [0x88, 0x00])])
+let closingWS = try? LinuxMarking.WebSocketConnection(stream: closing, host: "127.0.0.1", port: 1, path: "/", until: soon, key: rfcKey)
+check(failure { _ = try closingWS?.receive(until: soon) } == .closed, "a close frame: closed")
+check(failure { _ = try LinuxMarking.WebSocketConnection(stream: ScriptedStream([.bytes(forbidden)]), host: "127.0.0.1", port: 1, path: "/", until: soon, key: rfcKey) }
+      == .refused("HTTP/1.1 403 Forbidden"), "a refused handshake: an error with its status line")
+check(failure { _ = try LinuxMarking.WebSocketConnection(stream: ScriptedStream([.bytes(Array(agreed.prefix(20)))]), host: "127.0.0.1", port: 1, path: "/", until: soon, key: rfcKey) }
+      == .closed, "closed mid-handshake: closed")
+check(failure { _ = try LinuxMarking.WebSocketConnection(stream: ScriptedStream([.fail(.timedOut)]), host: "127.0.0.1", port: 1, path: "/", until: soon, key: rfcKey) }
+      == .timedOut, "no answer in time: timed out")
+let binaryWS = try? LinuxMarking.WebSocketConnection(stream: ScriptedStream([.bytes(agreed + [0x82, 0x00])]), host: "127.0.0.1", port: 1, path: "/", until: soon, key: rfcKey)
+check(failure { _ = try binaryWS?.receive(until: soon) } == .binary, "a binary message: its error")
+
+let httpStream = ScriptedStream([.bytes(Array(okBody.prefix(50))), .bytes(Array(okBody.dropFirst(50)))])
+let fetched = try? LinuxMarking.MiniHTTP.fetch("/json/version", host: "127.0.0.1", port: 9333, over: httpStream, until: soon)
+check(fetched?.status == 200 && fetched?.body == Array("{\"a\":1}".utf8) && httpStream.written == [LinuxMarking.MiniHTTP.get(host: "127.0.0.1", port: 9333, path: "/json/version")]
+      && httpStream.closed, "a GET read in pieces, its connection closed after")
+check(failure { _ = try LinuxMarking.MiniHTTP.fetch("/", host: "127.0.0.1", port: 1, over: ScriptedStream([.bytes(Array("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n{}".utf8))]), until: soon) }
+      == .io("malformed HTTP response"), "closed before its length: an error")
+check(failure { _ = try LinuxMarking.MiniHTTP.fetch("/", host: "127.0.0.1", port: 1, over: ScriptedStream([.fail(.timedOut)]), until: soon) } == .timedOut,
+      "no answer in time: timed out")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)
