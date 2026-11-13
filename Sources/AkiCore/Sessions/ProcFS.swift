@@ -21,6 +21,10 @@ public struct ProcFS: Sendable {
     public func cwd(of pid: Int32) -> String? {
         let path = try? FileManager.default.destinationOfSymbolicLink(atPath: root.appending(path: "\(pid)/cwd").path)
         guard let path, !path.isEmpty else { return nil }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return path
+        }
         let suffix = " (deleted)"
         return path.hasSuffix(suffix) ? String(path.dropLast(suffix.count)) : path
     }
