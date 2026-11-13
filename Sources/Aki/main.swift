@@ -1,8 +1,11 @@
 import AkiCore
+#if os(macOS)
 import AppKit
+#endif
 import Foundation
 
-let usage = """
+let usage = {
+    let text = """
     aki \(Aki.version) — point at anything on screen, your coding agent reads it.
 
     usage:
@@ -20,6 +23,17 @@ let usage = """
 
     The worktree is the git root of the current folder (override with AKI_WORKTREE).
     """
+
+    #if os(Linux)
+    return text.replacingOccurrences(
+        of: "  aki app                         open the app (sidebar + server)",
+        with: "  aki terminals                   individual agent sessions running now\n  aki recent                      conversations from the last seven days"
+            + "\n  aki shortcut install|remove     GNOME's Shift+Super+A for aki mark\n  aki mark                        mark the screen for an agent"
+    ).replacingOccurrences(of: "on this Mac", with: "on this machine")
+    #else
+    return text
+    #endif
+}()
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("aki: \(message)\n".utf8))
@@ -54,9 +68,14 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 // Opened from Finder / `open Aki.app` / at login (started by launchd, no terminal) or
 // `aki app`: run the app. `aki` alone from an agent's shell (no terminal either) only
 // shows how to use it, never a second Aki.
+#if os(macOS)
 if arguments.first == "app" || (arguments.isEmpty && isatty(STDIN_FILENO) == 0 && getppid() == 1) {
     AppMain.run()
 }
+#else
+// Only the command line for now on Linux: no app, no marking.
+if arguments.first == "app" { fail("the app is not available on Linux yet") }
+#endif
 
 do {
     switch arguments.first {
@@ -157,6 +176,7 @@ do {
             print("\(t.agent.rawValue.padding(toLength: 6, withPad: " ", startingAt: 0)) \(t.state.rawValue.padding(toLength: 9, withPad: " ", startingAt: 0)) \(t.name.prefix(30).padding(toLength: 30, withPad: " ", startingAt: 0)) \(URL(filePath: t.worktree).lastPathComponent)  — \(message)")
         }
 
+    #if os(macOS)
     case "visual-probe":
         // Bench for the picture-based lookup: aki visual-probe in.png out.png x,y x,y …
         // (points). Draws the box found at each point (red) and the one holding it (blue).
@@ -199,6 +219,39 @@ do {
         for t in AgentSessions.terminals() {
             print("\(t.name.prefix(36).padding(toLength: 36, withPad: " ", startingAt: 0)) → \(TerminalJump.orcaTab(for: t) ?? "—")")
         }
+
+    #else
+    case "visual-probe", "orca-tabs":
+        fail("\(arguments[0]) is not available on Linux yet")
+
+    case "mark":
+        // The overlay is GTK's, in its own executable beside this one: `aki` runs without GTK.
+        guard arguments.count == 1 else { fail("usage: aki mark") }
+        guard let executable = LinuxMarking.currentExecutable() else { fail("can't tell where this aki is (/proc/self/exe)") }
+        let marker = LinuxMarking.sibling("aki-mark", of: executable)
+        guard FileManager.default.isExecutableFile(atPath: marker) else {
+            fail("aki mark needs aki-mark next to this aki (\(marker)): install both from the same build")
+        }
+        execv(marker, [strdup(marker), nil])
+        fail("couldn't start \(marker): \(String(cString: strerror(errno)))")
+
+    case "shortcut":
+        // GNOME's custom shortcut for `aki mark` (no other desktop yet).
+        let action = arguments.dropFirst().first
+        guard action == "install" || action == "remove", arguments.count == 2 else { fail("usage: aki shortcut install|remove") }
+        guard let gsettings = GnomeShortcut.gsettings() else { fail("gsettings not found: the shortcut is for GNOME") }
+        let runner = GnomeShortcut.ProcessRunner(executable: gsettings)
+        let report: GnomeShortcut.Report
+        if action == "install" {
+            guard let executable = LinuxMarking.currentExecutable() else { fail("can't tell where this aki is (/proc/self/exe)") }
+            report = GnomeShortcut.install(executable: executable, runner: runner)
+        } else {
+            report = GnomeShortcut.remove(runner: runner)
+        }
+        guard report.ok else { fail(report.message) }
+        print(report.message)
+        if let warning = report.warning { FileHandle.standardError.write(Data("aki: \(warning)\n".utf8)) }
+    #endif
 
     case "sessions":
         for session in AgentSessions.scan() {

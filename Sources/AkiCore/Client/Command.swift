@@ -4,6 +4,13 @@ import Foundation
 /// iCloud is still downloading, `lsof` on a stalled disk, an Orca updating, a slow
 /// `.zshrc`) is stopped and counts as failed, so it never holds up the sidebar or a send.
 public enum Command {
+    /// Where `lsof` is: macOS keeps it in /usr/sbin, Linux distributions in /usr/bin.
+    #if os(macOS)
+    public static let lsof = "/usr/sbin/lsof"
+    #else
+    public static let lsof = "/usr/bin/lsof"
+    #endif
+
     /// Its output when it ends well in time (exit 0), else nil. `anyEnd`: whatever it
     /// printed however it ended (`lsof` ends in error when one of the processes asked
     /// about is gone, and still lists the others').
@@ -12,12 +19,34 @@ public enum Command {
         return result?.status == 0 || anyEnd ? result?.output : nil
     }
 
+    /// How a program run ended: what a caller that must not repeat it (a message typed
+    /// into a terminal) needs to tell "it failed" from "no answer in time".
+    public enum Outcome: Equatable, Sendable {
+        case exited(status: Int32, output: Data)
+        case timedOut
+        case couldNotStart
+    }
+
+    public static func outcome(_ path: String, _ arguments: [String], timeout: TimeInterval = 5) -> Outcome {
+        var timedOut = false
+        guard let result = run(path, arguments, timeout: timeout, capture: true, timedOut: &timedOut) else {
+            return timedOut ? .timedOut : .couldNotStart
+        }
+        return .exited(status: result.status, output: result.output)
+    }
+
     /// Whether it ended well in time (exit 0); its output isn't kept.
     public static func succeeds(_ path: String, _ arguments: [String], timeout: TimeInterval) -> Bool {
         run(path, arguments, timeout: timeout, capture: false)?.status == 0
     }
 
     private static func run(_ path: String, _ arguments: [String], timeout: TimeInterval, capture: Bool)
+        -> (status: Int32, output: Data)? {
+        var timedOut = false
+        return run(path, arguments, timeout: timeout, capture: capture, timedOut: &timedOut)
+    }
+
+    private static func run(_ path: String, _ arguments: [String], timeout: TimeInterval, capture: Bool, timedOut: inout Bool)
         -> (status: Int32, output: Data)? {
         let process = Process()
         process.executableURL = URL(filePath: path)
@@ -47,6 +76,7 @@ public enum Command {
             process.terminate()
             if exited.wait(timeout: .now() + 1) == .timedOut { kill(process.processIdentifier, SIGKILL) }
             pipe.fileHandleForReading.readabilityHandler = nil
+            timedOut = true
             return nil
         }
         // The rest of its answer (a second at most: something it started may hold the pipe).

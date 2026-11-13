@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// What OpenAI knows about your Codex account and the logs on this Mac don't: the
 /// limit resets you have saved, your all-time numbers, what you call most.

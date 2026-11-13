@@ -112,6 +112,7 @@ public struct HTTPResponse: Sendable {
         case 411: "Length Required"
         case 413: "Payload Too Large"
         case 431: "Request Header Fields Too Large"
+        case 503: "Service Unavailable"
         default: status >= 500 ? "Internal Server Error" : "Status"
         }
     }

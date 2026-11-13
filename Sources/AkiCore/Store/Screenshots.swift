@@ -62,7 +62,9 @@ public struct Screenshots: Sendable, Equatable {
     /// Marked as one by macOS, or named the way it names them, in any language.
     public static func isScreenshot(_ url: URL) -> Bool {
         guard ["png", "jpg", "jpeg", "heic", "tiff", "pdf", "mov"].contains(url.pathExtension.lowercased()) else { return false }
+        #if os(macOS)
         if getxattr(url.path, "com.apple.metadata:kMDItemIsScreenCapture", nil, 0, 0, 0) > 0 { return true }
+        #endif
         // The name, then the date: "Screenshot 2026-10-10 at 15.30.00" (not "screenshot of the logo").
         let name = url.lastPathComponent.lowercased()
         return namePrefixes.contains { prefix in
@@ -85,10 +87,12 @@ public struct Screenshots: Sendable, Equatable {
     public static func trash(_ files: [File]) -> (count: Int, bytes: Int64) {
         var count = 0
         var bytes: Int64 = 0
+        #if os(macOS)
         for file in files where (try? FileManager.default.trashItem(at: file.url, resultingItemURL: nil)) != nil {
             count += 1
             bytes += file.bytes
         }
+        #endif
         return (count, bytes)
     }
 }

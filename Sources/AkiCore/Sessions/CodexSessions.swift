@@ -24,15 +24,24 @@ public enum CodexSessions {
 
     private static func lookUpOpenLogs(of pids: [Int32]) -> [Int32: [URL]] {
         var result: [Int32: [URL]] = [:]
+        #if os(Linux)
+        let proc = ProcFS()
+        for pid in pids {
+            result[pid] = proc.openFiles(of: pid).filter {
+                $0.hasSuffix(".jsonl") && $0.contains("/rollout-")
+            }.map { URL(filePath: $0) }
+        }
+        #else
         var pid: Int32?
         let list = pids.map(String.init).joined(separator: ",")
-        for line in AgentSessions.run("/usr/sbin/lsof", ["-a", "-nP", "-p", list, "-Fpn"]).split(separator: "\n") {
+        for line in AgentSessions.run(Command.lsof, ["-a", "-nP", "-p", list, "-Fpn"]).split(separator: "\n") {
             if line.hasPrefix("p") {
                 pid = Int32(line.dropFirst())
             } else if line.hasPrefix("n"), let pid, line.hasSuffix(".jsonl"), line.contains("/rollout-") {
                 result[pid, default: []].append(URL(filePath: String(line.dropFirst())))
             }
         }
+        #endif
         return result
     }
 

@@ -1,5 +1,7 @@
 import Foundation
+#if os(macOS)
 import SQLite3
+#endif
 
 /// The Codex app's conversations ("Revisar NFs no Drive"), from the list Codex keeps of
 /// its threads (`state_5.sqlite`, opened read-only): only names, times and where each
@@ -44,6 +46,7 @@ public enum CodexAppThreads {
     }
 
     static func query(limit: Int, home: URL, ids: [String] = []) -> [DesktopApps.Conversation] {
+        #if os(macOS)
         // The newest of the state files ("state_5.sqlite" now; a later Codex may number it anew).
         let files = (try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? []
         guard let name = files.filter({ $0.hasPrefix("state_") && $0.hasSuffix(".sqlite") })
@@ -94,5 +97,9 @@ public enum CodexAppThreads {
                 log: path.isEmpty ? nil : URL(filePath: path)))
         }
         return list
+        #else
+        // No Codex app on Linux (and no SQLite headers to read its list with).
+        return []
+        #endif
     }
 }

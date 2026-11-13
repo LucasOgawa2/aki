@@ -37,3 +37,41 @@ jobs:
         run: swift build
       - name: Checks
         run: swift run AkiChecks
+  linux:
+    name: Build and checks (Linux)
+    # The core and the command line only: the app is macOS's.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Swift's official image, pinned to a digest so a moved tag can't change what runs here.
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checks ask lsof which address the server listens on; ps lists the agents.
+      # GTK 4 and Xlib (headers and pkg-config) build aki-mark; nothing here needs a display.
+      - name: Tools
+        run: apt-get update && apt-get install -y --no-install-recommends lsof procps libgtk-4-dev libx11-dev pkg-config
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Checks
+        run: swift run AkiChecks
+      # The built binary itself: the version, and the usage (exit 0). It reads ps and ~/.claude/sessions and writes nothing.
+      - name: Command line
+        run: |
+          swift run aki --version
+          swift run aki
+          # aki-mark with no display: says so and exits 1 (no window, nothing captured).
+          if swift run aki-mark 2> aki-mark.err; then exit 1; fi
+          grep -q "no DISPLAY" aki-mark.err && rm aki-mark.err
+      - name: Verify clean working tree
+        # If Package.resolved changes, run swift package resolve and commit the file.
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          status="$(git status --porcelain)"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi

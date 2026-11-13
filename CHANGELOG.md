@@ -4,6 +4,9 @@ What changed in each version of Aki. Versions follow [semantic versioning](https
 
 ## [Unreleased]
 
+### Added
+- The core and `aki` command run on Linux: read and resolve marks, find agent sessions, check usage and serve annotations.
+
 ### Fixed
 - A page's menu that opens on hover (a site's top menu) stays on screen when marking opens: it closed as the overlay came up under the pointer.
 
