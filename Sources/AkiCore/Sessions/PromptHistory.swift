@@ -109,6 +109,7 @@ public enum PromptHistory {
 
     /// When a process started (a conversation just opened has had no prompt yet).
     public static func started(_ pid: Int32) -> Date? {
+        #if os(macOS)
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
@@ -116,5 +117,8 @@ public enum PromptHistory {
         let time = info.kp_proc.p_starttime
         guard time.tv_sec > 0 else { return nil }
         return Date(timeIntervalSince1970: Double(time.tv_sec) + Double(time.tv_usec) / 1_000_000)
+        #else
+        return ProcFS().started(pid)
+        #endif
     }
 }

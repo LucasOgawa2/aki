@@ -166,7 +166,7 @@ public enum AgentSessions {
 
     /// One `ps` and one `lsof` for everything, so it's cheap to call every few seconds.
     public static func scan(pending: [Annotation] = []) -> [AgentSession] {
-        let all = runningProcesses()
+        let all = runningProcessesWithCPU()
         let processes = all.compactMap { p in classify(p.command).map { (p, $0) } }
         let apps = DesktopApps.running(in: all)
         guard !processes.isEmpty || !apps.isEmpty else { return [] }
@@ -256,9 +256,74 @@ public enum AgentSessions {
         return list
     }
 
+    #if os(Linux)
+    /// Whether session/terminal readers consume this process's CPU.
+    public static func readsCPU(_ command: String) -> Bool {
+        if case .agent? = classify(command) { return true }
+        return isClaudeAppSession(command)
+    }
+
+    /// Pure sampling state: only successfully read agent samples enter the cache.
+    public struct CPUTracker {
+        private var samples: [Int32: ProcFS.CPUSample] = [:]
+
+        public init() {}
+
+        public func needsBaseline(_ current: [Int32: ProcFS.CPUSample]) -> Bool {
+            current.contains { pid, sample in samples[pid]?.startTicks != sample.startTicks }
+        }
+
+        public mutating func update(_ current: [Int32: ProcFS.CPUSample], using proc: ProcFS) -> [Int32: Double] {
+            var percentages: [Int32: Double] = [:]
+            for (pid, sample) in current {
+                percentages[pid] = samples[pid].flatMap { proc.cpuPercent(from: $0, to: sample) } ?? 0
+            }
+            samples = current
+            return percentages
+        }
+    }
+
+    nonisolated(unsafe) private static var cpuTracker = CPUTracker()
+    private static let cpuLock = NSLock()
+    #endif
+
+    /// Only session/terminal scans need CPU. Command identity never waits for sampling.
+    private static func runningProcessesWithCPU() -> [Process] {
+        let list = runningProcesses()
+        #if os(Linux)
+        let agents = list.filter { readsCPU($0.command) }
+        return cpuLock.withLock {
+            let proc = ProcFS()
+            func sample() -> [Int32: ProcFS.CPUSample] {
+                let now = ProcessInfo.processInfo.systemUptime
+                return Dictionary(agents.compactMap { process in
+                    proc.cpuSample(of: process.pid, at: now).map { (process.pid, $0) }
+                }, uniquingKeysWith: { first, _ in first })
+            }
+            var current = sample()
+            if cpuTracker.needsBaseline(current) {
+                _ = cpuTracker.update(current, using: proc)
+                // One shared interval for readable agents, never one sleep per process.
+                Thread.sleep(forTimeInterval: 0.25)
+                current = sample()
+            }
+            let percentages = cpuTracker.update(current, using: proc)
+            return list.map { process in
+                var process = process
+                // DesktopApps' helper CPU reader is unreachable on Linux; non-agents stay zero.
+                process.cpu = percentages[process.pid] ?? 0
+                return process
+            }
+        }
+        #else
+        return list
+        #endif
+    }
+
     /// Each process's folder, asked of the kernel directly (an `lsof` per pass cost
     /// more than everything else the sidebar does).
     static func workingDirectories(of pids: [Int32]) -> [Int32: String] {
+        #if os(macOS)
         var result: [Int32: String] = [:]
         for pid in pids {
             var info = proc_vnodepathinfo()
@@ -270,6 +335,12 @@ public enum AgentSessions {
             if !path.isEmpty { result[pid] = path }
         }
         return result
+        #else
+        let proc = ProcFS()
+        var result: [Int32: String] = [:]
+        for pid in pids { result[pid] = proc.cwd(of: pid) }
+        return result
+        #endif
     }
 
     nonisolated(unsafe) private static var branches = [String: (name: String?, at: Date)]()
@@ -314,13 +385,24 @@ public enum AgentSessions {
         return nil
     }
 
+    /// Linux's environment already has argv removed by procfs.
+    public static func terminalHandle(inEnvironment environment: [String: String]) -> String? {
+        let handle = environment["ORCA_TERMINAL_HANDLE"]
+        return handle?.isEmpty == false ? handle : nil
+    }
+
     private static func terminalHandle(of pid: Int32) -> String? {
+        #if os(macOS)
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0, size <= 4 * 1024 * 1024 else { return nil }
         var bytes = [UInt8](repeating: 0, count: size)
         guard sysctl(&mib, 3, &bytes, &size, nil, 0) == 0 else { return nil }
         return terminalHandle(inProcessArguments: Data(bytes.prefix(size)))
+        #else
+        // Only the environment: a prompt in the arguments naming a handle is not an identity.
+        return terminalHandle(inEnvironment: ProcFS().environment(of: pid) ?? [:])
+        #endif
     }
 
     static func run(_ path: String, _ arguments: [String]) -> String {
@@ -379,7 +461,7 @@ extension AgentSessions {
     /// `keeping`: destinations kept even when they'd be left out (the one you chose).
     /// `recent`: marks made lately, sent or not (one is something you sent that session).
     public static func terminals(pending: [Annotation] = [], recent: [Annotation] = [], keeping: Set<String> = []) -> [AgentTerminal] {
-        let all = runningProcesses()
+        let all = runningProcessesWithCPU()
         let processes = all.compactMap { p in classify(p.command).map { (p, $0) } }
         // Which sessions have an `aki wait` listening for them.
         let listening = Set(processes.compactMap { process, kind -> String? in
