@@ -202,11 +202,11 @@ try liveLogHandle.close()
 server.stop()
 
 #if os(Linux)
-for failure in [EINTR, ECONNABORTED, EPERM, ENETDOWN, EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, ENETUNREACH] {
+for failure in [EINTR, ECONNABORTED, ENETDOWN, EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, ENETUNREACH] {
     check(HTTPServer.acceptAction(for: failure) == .retry, "accept retries connection error \(failure) immediately")
 }
-for failure in [EMFILE, ENFILE, ENOBUFS, ENOMEM] {
-    check(HTTPServer.acceptAction(for: failure) == .pause, "accept pauses on resource exhaustion \(failure)")
+for failure in [EPERM, EMFILE, ENFILE, ENOBUFS, ENOMEM] {
+    check(HTTPServer.acceptAction(for: failure) == .pause, "accept pauses on firewall denial or resource exhaustion \(failure)")
 }
 for failure in [EBADF, EINVAL] {
     check(HTTPServer.acceptAction(for: failure) == .stop, "accept stops on invalid listener \(failure)")
