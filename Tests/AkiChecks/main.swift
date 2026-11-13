@@ -186,7 +186,7 @@ check(listening.contains("127.0.0.1:\(port)") && !listening.contains("*:\(port)"
 check(Worktree.server(ofPort: Int(port))?.pid == getpid(), "procfs finds the check process's live listening socket")
 check(Worktree.ports(servedFrom: FileManager.default.currentDirectoryPath).contains(Int(port)), "procfs includes a live server in worktree port filtering")
 let liveLog = temp.appending(path: "rollout-live.jsonl")
-FileManager.default.createFile(atPath: liveLog.path, contents: Data())
+_ = FileManager.default.createFile(atPath: liveLog.path, contents: Data())
 let liveLogHandle = try FileHandle(forReadingFrom: liveLog)
 check(CodexSessions.openLogs(of: [getpid()])[getpid()]?.contains(liveLog) == true, "Codex log discovery uses the process's real open descriptors")
 try liveLogHandle.close()
