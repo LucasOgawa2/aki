@@ -7,8 +7,10 @@ import Foundation
 /// - the crop always goes (the Mac sends it only when `sendsImage` is on: there's no
 ///   such toggle here);
 /// - `selected_text` is the words tesseract read under an area (the Mac's Vision), cut
-///   at 4000 characters as there; no `url`, `element_context` nor `selector` yet (the
-///   browser comes later);
+///   at 4000 characters as there;
+/// - `url`, `element_context`, `selector` and `source_file_path` come from Chrome's
+///   DevTools (`AKI_CDP_URL`) instead of AppleScript; `kind` stays "point" for a click on
+///   an element (the Mac turns it into the element's frame: there's no hover outline here);
 /// - one destination for the whole round (the Mac keeps one per mark).
 extension LinuxMarking {
     /// `aki_<ms>_<8 chars>`, as the Mac makes them.
@@ -52,6 +54,21 @@ extension LinuxMarking {
         if let window = mark.app?.window, !window.isEmpty { app["window"] = .string(window) }
         if !app.isEmpty { fields["app"] = .object(app) }
         if let text = mark.selectedText, !text.isEmpty { fields["selected_text"] = .string(String(text.prefix(textLimit))) }
+        if let url = mark.url { fields["url"] = .string(url) }
+        if let element = mark.element {
+            // Same shape as Vibe Annotations' element_context, so agents read it alike (the Mac's).
+            var info: [String: JSONValue] = ["path": .string(element.path), "tag": .string(element.tag)]
+            if let text = element.text { info["text"] = .string(text) }
+            if let id = element.id { info["id"] = .string(id) }
+            if !element.classes.isEmpty { info["classes"] = .array(element.classes.map { .string($0) }) }
+            if let source = element.source {
+                info["source"] = .string(source)
+                fields["source_file_path"] = .string(source)
+            }
+            if let html = element.html { info["html"] = .string(html) }
+            fields["element_context"] = .object(info)
+            fields["selector"] = .string(element.selector ?? element.path)
+        }
         fields.merge(sessionFields(of: terminal)) { _, new in new }
         return fields
     }

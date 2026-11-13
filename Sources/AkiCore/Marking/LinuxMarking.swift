@@ -41,9 +41,13 @@ public enum LinuxMarking {
         public var app: AppInfo?
         /// The words under an area, read by OCR (the Mac's Vision text); nil until read, or none.
         public var selectedText: String?
+        /// The browser tab's address, when the mark is on one (read through DevTools).
+        public var url: String?
+        /// The page's element under a point mark (the Mac's `ProbedElement`).
+        public var element: PageElement?
 
         public init(id: UUID = UUID(), screen: Int, rect: Rect, comment: String = "", number: Int, app: AppInfo? = nil,
-                    selectedText: String? = nil) {
+                    selectedText: String? = nil, url: String? = nil, element: PageElement? = nil) {
             self.id = id
             self.screen = screen
             self.rect = rect
@@ -51,6 +55,8 @@ public enum LinuxMarking {
             self.number = number
             self.app = app
             self.selectedText = selectedText
+            self.url = url
+            self.element = element
         }
     }
 

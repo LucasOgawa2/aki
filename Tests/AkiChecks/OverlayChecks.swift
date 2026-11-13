@@ -31,11 +31,17 @@ final class FakeGSettings: GSettingsRunner, @unchecked Sendable {
     }
 }
 
+typealias Overlay = LinuxMarking.OverlayState
+
+func waitToken(_ effect: Overlay.Effect?) -> Int? {
+    if case let .wait(token)? = effect { return token }
+    return nil
+}
+
 func at(_ x: Double, _ y: Double) -> LinuxMarking.Point { .init(x: x, y: y) }
 
 @MainActor func overlayChecks(orcaBin: URL) async throws {
     print("linux marking: overlay")
-    typealias Overlay = LinuxMarking.OverlayState
     let sessionA = LinuxMarking.terminal(id: "a", name: "A", worktree: "/a", lastSent: Date(timeIntervalSince1970: 10))
     let sessionB = LinuxMarking.terminal(id: "b", name: "B", worktree: "/b", lastSent: Date(timeIntervalSince1970: 20))
     let sessionC = LinuxMarking.terminal(id: "c", name: "C", worktree: "/c")
@@ -397,7 +403,7 @@ func at(_ x: Double, _ y: Double) -> LinuxMarking.Point { .init(x: x, y: y) }
     print("linux marking: overlay waiting for the text")
     var reading = Overlay(sessions: [sessionA], readsText: true)
     let readArea = reading.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
-    check(readArea == .enrich(reading.marks[0]) && reading.isPending(reading.marks[0].id), "reading text: an area drawn asks for its words, and waits for them")
+    check(readArea == .enrich(reading.marks[0], sources: [.text]) && reading.isPending(reading.marks[0].id), "reading text: an area drawn asks for its words, and waits for them")
     check(reading.handle(.pointer(screen: 0, from: at(5, 5), to: at(5, 5), app: nil)) == nil && !reading.isPending(reading.marks[1].id),
           "a point reads nothing (as on the Mac)")
     var notReading = Overlay(sessions: [sessionA])
@@ -421,10 +427,6 @@ func at(_ x: Double, _ y: Double) -> LinuxMarking.Point { .init(x: x, y: y) }
     check(undone.marks.isEmpty && !undone.isPending(escapedID) && undone.handle(.enriched(id: escapedID, .init(text: "x"))) == nil && undone.marks.isEmpty,
           "Esc on its card: the same")
 
-    func waitToken(_ effect: Overlay.Effect?) -> Int? {
-        if case let .wait(token)? = effect { return token }
-        return nil
-    }
     var waiting = Overlay(sessions: [sessionA, sessionB], readsText: true)
     _ = waiting.handle(.pointer(screen: 0, from: at(10, 10), to: at(80, 60), app: nil))
     _ = waiting.handle(.draft("rename it"))

@@ -14,7 +14,9 @@ extension LinuxMarking {
     /// Differences: one destination for the whole round (the Mac's
     /// `setDestinationForAll`; there each mark keeps its own); it starts on the session
     /// used last, else the first (the Mac uses the tab you just left or the ring you
-    /// picked, then the session serving the page: `aki mark` is one-shot, no sidebar);
+    /// picked, then the session serving the page: `aki mark` is one-shot, no sidebar; a
+    /// mark on a localhost page doesn't move the destination to the session serving it,
+    /// as `MarkingSession` does by the mark's `url`: it stays on the one used last);
     /// `warning` says what the Mac says with a beep (GNOME's shortcut drops stderr).
     public struct OverlayState: Equatable, Sendable {
         public private(set) var marks: [PortableMark] = []
@@ -30,8 +32,8 @@ extension LinuxMarking {
         public private(set) var batch: Set<UUID> = []
         /// Every session's name seen this round, to name one that closed.
         private var names: [String: String] = [:]
-        /// The reads each mark still waits for (one per source: its words now, its page later).
-        private var pending: [UUID: Int] = [:]
+        /// The reads each mark still waits for, by source (its words, its page).
+        private var pending: [UUID: Set<Source>] = [:]
         /// The send waiting for them: its token (an older timer never sends) and where it goes.
         private var wait: Wait?
         private struct Wait: Equatable, Sendable {
@@ -42,10 +44,16 @@ extension LinuxMarking {
 
         /// Whether an area's words are read after it's drawn (off when there's no tesseract).
         public let readsText: Bool
+        /// Whether a mark on a browser asks its page (off when `AKI_CDP_URL` is refused).
+        public let readsPage: Bool
 
-        public init(sessions: [AgentTerminal], readsText: Bool = false) {
+        /// Where a mark's details come from: its words (OCR), its page (DevTools).
+        public enum Source: Hashable, Sendable { case text, page }
+
+        public init(sessions: [AgentTerminal], readsText: Bool = false, readsPage: Bool = false) {
             self.sessions = sessions
             self.readsText = readsText
+            self.readsPage = readsPage
             for session in sessions { names[session.id] = session.name }
             // The first of those used last (ties, or none known: the list's order).
             destination = sessions.reduce(nil as AgentTerminal?) { best, session in
@@ -57,7 +65,8 @@ extension LinuxMarking {
         public static let clickSlop = 5.0
 
         public enum Event: Equatable, Sendable {
-            case pointer(screen: Int, from: Point, to: Point, app: AppInfo?)
+            /// `onBrowser`: the mark (a point, an area's centre) is in the active window, a browser's.
+            case pointer(screen: Int, from: Point, to: Point, app: AppInfo?, onBrowser: Bool = false)
             case draft(String)
             case escape, undo, nextDestination, previousDestination, send
             /// Enter without Ctrl (the Mac's field): a note queues its mark; none (or no card) sends.
@@ -66,7 +75,7 @@ extension LinuxMarking {
             case sessionsChanged([AgentTerminal])
             case sendFinished(failed: [UUID], warning: String?)
             /// What was read about a mark (nil fields: nothing, or the read failed).
-            case enriched(id: UUID, Enrichment)
+            case enriched(id: UUID, source: Source = .text, Enrichment)
             /// The time a send waits for the reads is up (the `.wait` with this token).
             case deadline(Int)
         }
@@ -74,14 +83,20 @@ extension LinuxMarking {
         /// What a read brings back; each field fills the mark's own, when there.
         public struct Enrichment: Equatable, Sendable {
             public var text: String?
-            public init(text: String? = nil) { self.text = text }
+            public var url: String?
+            public var element: PageElement?
+            public init(text: String? = nil, url: String? = nil, element: PageElement? = nil) {
+                self.text = text
+                self.url = url
+                self.element = element
+            }
         }
 
         public enum Effect: Equatable, Sendable {
             case send([PortableMark], destination: String)
             case close
-            /// Read what's under this mark, then come back with `.enriched`.
-            case enrich(PortableMark)
+            /// Read what's under this mark from each source, then come back with one `.enriched` each.
+            case enrich(PortableMark, sources: Set<Source>)
             /// Ctrl+Enter with reads still going: send `.deadline(token)` when the wait is up.
             case wait(token: Int)
         }
@@ -93,7 +108,7 @@ extension LinuxMarking {
             default: warning = nil
             }
             switch event {
-            case let .pointer(screen, from, to, app):
+            case let .pointer(screen, from, to, app, onBrowser):
                 // Not while the marks go (as on the Mac).
                 guard !sending else { return nil }
                 let moved = ((to.x - from.x) * (to.x - from.x) + (to.y - from.y) * (to.y - from.y)).squareRoot()
@@ -105,9 +120,14 @@ extension LinuxMarking {
                 marks.append(mark)
                 editing = mark.id
                 justMade = true
-                if readsText, !rect.isPoint {
-                    pending[mark.id] = 1
-                    return .enrich(mark)
+                // An area's words (as on the Mac, a point reads none); on a browser, its page
+                // too (the element for a point, only the address for an area).
+                var sources: Set<Source> = []
+                if readsText, !rect.isPoint { sources.insert(.text) }
+                if readsPage, onBrowser { sources.insert(.page) }
+                if !sources.isEmpty {
+                    pending[mark.id] = sources
+                    return .enrich(mark, sources: sources)
                 }
             case let .draft(text):
                 guard editing != nil else { return nil }
@@ -174,13 +194,21 @@ extension LinuxMarking {
                     return .wait(token: waits)
                 }
                 return startSend(to: destination)
-            case let .enriched(id, enrichment):
-                // A mark undone, dropped or sent meanwhile: nothing waits for it.
-                guard let count = pending[id] else { return nil }
-                if let index = marks.firstIndex(where: { $0.id == id }), let text = enrichment.text {
-                    marks[index].selectedText = text
+            case let .enriched(id, source, enrichment):
+                // A mark undone, dropped or sent meanwhile, or this source already in: nothing waits for it.
+                guard var sources = pending[id], sources.contains(source) else { return nil }
+                if let index = marks.firstIndex(where: { $0.id == id }) {
+                    switch source {
+                    case .text:
+                        if let text = enrichment.text { marks[index].selectedText = text }
+                    case .page:
+                        if let url = enrichment.url { marks[index].url = url }
+                        // An area takes only the address (as on the Mac: an element is a point's).
+                        if marks[index].rect.isPoint, let element = enrichment.element { marks[index].element = element }
+                    }
                 }
-                pending[id] = count > 1 ? count - 1 : nil
+                sources.remove(source)
+                pending[id] = sources.isEmpty ? nil : sources
                 if let wait, !marks.contains(where: { pending[$0.id] != nil }) { return startSend(to: wait.destination) }
             case let .deadline(token):
                 guard let wait, wait.token == token else { return nil }
@@ -213,6 +241,9 @@ extension LinuxMarking {
 
         /// Whether a mark's words (or, later, its page) are still being read.
         public func isPending(_ id: UUID) -> Bool { pending[id] != nil }
+
+        /// The sources a mark still waits for.
+        public func pendingSources(_ id: UUID) -> Set<Source> { pending[id] ?? [] }
 
         private mutating func startSend(to destination: String) -> Effect {
             wait = nil

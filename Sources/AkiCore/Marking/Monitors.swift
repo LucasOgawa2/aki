@@ -35,6 +35,18 @@ extension LinuxMarking {
         PixelSize(width: monitor.width * monitor.scale, height: monitor.height * monitor.scale)
     }
 
+    /// `WM_CLASS` classes of the Chromium browsers asked through DevTools (the Mac's `BrowserProbe.bundles`).
+    public static let browserClasses: Set<String> = ["Google-chrome", "Chromium", "Chromium-browser", "Brave-browser", "Microsoft-edge"]
+
+    /// Whether a mark is on the active window and that's a browser: its point, or an
+    /// area's centre, inside `window` (root device pixels, absolute).
+    public static func isOnBrowser(_ rect: Rect, on monitor: Monitor, window: Rect?, appName: String?) -> Bool {
+        guard let window, let appName, browserClasses.contains(appName) else { return false }
+        let root = rootRect(of: rect, on: monitor)
+        let x = root.x + root.width / 2, y = root.y + root.height / 2
+        return x >= window.x && x < window.x + window.width && y >= window.y && y < window.y + window.height
+    }
+
     /// A mark's rect (device pixels, local to its monitor) in the root window's device
     /// pixels: where its crop is in the capture.
     public static func rootRect(of rect: Rect, on monitor: Monitor) -> Rect {

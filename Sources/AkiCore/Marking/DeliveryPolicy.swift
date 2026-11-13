@@ -121,8 +121,9 @@ extension LinuxMarking {
         return terminal.worktree == path || terminal.worktree.hasPrefix(path.hasSuffix("/") ? path : path + "/")
     }
 
-    /// Where the marks were made, once each (the listing's `pendingPlaces`).
-    static func places(of marks: [Annotation]) -> [String] {
+    /// Where the marks were made, once each (the listing's `pendingPlaces`): a page's
+    /// host:port when the mark has a `url` (as on the Mac), else the app.
+    public static func places(of marks: [Annotation]) -> [String] {
         var seen: [String] = []
         for a in marks {
             let place: String? = a["url"]?.string.flatMap(URL.init(string:)).flatMap { u in
