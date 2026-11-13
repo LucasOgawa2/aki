@@ -23,6 +23,14 @@ var failures = 0
 let temp = FileManager.default.temporaryDirectory.appending(path: "aki-checks-\(UUID().uuidString)")
 defer { try? FileManager.default.removeItem(at: temp) }
 
+// MARK: Client errors
+
+#if os(Linux)
+check(AkiClient.Failure.serverDown(port: 3850).description == "Aki isn't running (nothing on 127.0.0.1:3850). Run `aki serve`.", "Linux server-down message offers the CLI server")
+#else
+check(AkiClient.Failure.serverDown(port: 3850).description == "Aki isn't running (nothing on 127.0.0.1:3850). Open Aki.app or run `aki serve`.", "macOS server-down message offers both the app and CLI server")
+#endif
+
 // MARK: Store
 
 print("store")
