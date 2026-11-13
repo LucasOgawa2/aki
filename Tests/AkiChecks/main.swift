@@ -785,6 +785,14 @@ check(!ClaudeAppUsage.isUsage("1/0/https://claude.ai/api/organizations/abc/chat_
 let appUsage = ClaudeAppUsage.parse(Data(#"{"five_hour":{"utilization":12.4,"resets_at":"2026-10-15T22:00:00.123+00:00"},"seven_day":{"utilization":29,"resets_at":"2026-10-19T12:00:00Z"}}"#.utf8), updated: Date())
 check(appUsage?.week?.percent == 29 && appUsage?.fiveHour?.percent == 12 && appUsage?.week?.resets != nil && appUsage?.fiveHour?.resets != nil, "claude app usage parsed")
 check(ClaudeAppUsage.parse(Data(#"{"other":1}"#.utf8), updated: Date()) == nil, "no windows, no reading")
+#if os(Linux)
+// Where the Claude app keeps its cache on Linux: XDG_CONFIG_HOME only when it is an absolute path.
+let xdgHome = URL(filePath: "/home/someone")
+check(ClaudeAppUsage.configHome(environment: ["XDG_CONFIG_HOME": "/opt/cfg"], home: xdgHome).path == "/opt/cfg", "an absolute XDG_CONFIG_HOME is used")
+check(ClaudeAppUsage.configHome(environment: ["XDG_CONFIG_HOME": "cfg"], home: xdgHome).path == "/home/someone/.config", "a relative XDG_CONFIG_HOME is ignored")
+check(ClaudeAppUsage.configHome(environment: ["XDG_CONFIG_HOME": ""], home: xdgHome).path == "/home/someone/.config", "an empty XDG_CONFIG_HOME is ignored")
+check(ClaudeAppUsage.configHome(environment: [:], home: xdgHome).path == "/home/someone/.config", "no XDG_CONFIG_HOME falls back to ~/.config")
+#endif
 
 // A message pasted into a Claude app's Code session: found in that session's transcript.
 do {

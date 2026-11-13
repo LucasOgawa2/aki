@@ -11,10 +11,17 @@ public enum ClaudeAppUsage {
         .appending(path: "Library/Application Support/Claude/Cache/Cache_Data")
     #else
     // Where an Electron app named Claude keeps its cache on Linux (XDG config folder).
-    public static let directory = (ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap {
-        $0.isEmpty ? nil : URL(filePath: $0)
-    } ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: ".config"))
+    public static let directory = configHome(
+        environment: ProcessInfo.processInfo.environment, home: FileManager.default.homeDirectoryForCurrentUser)
         .appending(path: "Claude/Cache/Cache_Data")
+
+    /// The XDG config folder: XDG_CONFIG_HOME when it is an absolute path (the XDG spec
+    /// says to ignore a relative or empty one), else <home>/.config.
+    public static func configHome(environment: [String: String], home: URL) -> URL {
+        environment["XDG_CONFIG_HOME"].flatMap {
+            $0.hasPrefix("/") ? URL(filePath: $0) : nil
+        } ?? home.appending(path: ".config")
+    }
     #endif
 
     /// The newest usage answer in the cache, or nil (no app, nothing cached yet).
