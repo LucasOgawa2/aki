@@ -260,7 +260,11 @@ for failure in [EBADF, EINVAL] {
 let pressureServer = HTTPServer(port: 0) { _ in HTTPResponse(status: 200, body: Data("recovered".utf8)) }
 let pressurePort = try await pressureServer.start()
 let pressureClient = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+let pressureClientError = errno
+check(pressureClient >= 0, "pressure client socket creation succeeds (errno \(pressureClientError))")
 let warmClient = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+let warmClientError = errno
+check(warmClient >= 0, "warm-up client socket creation succeeds (errno \(warmClientError))")
 var oldLimit = rlimit()
 _ = getrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &oldLimit)
 // Keep extra descriptors open to cover runners already above 128, when allowed.
