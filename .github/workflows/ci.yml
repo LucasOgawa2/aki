@@ -55,5 +55,13 @@ jobs:
         run: swift --version
       - name: Build
         run: swift build
+      - name: Verify clean working tree
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          status="$(git status --porcelain)"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi
       - name: Checks
         run: swift run AkiChecks
