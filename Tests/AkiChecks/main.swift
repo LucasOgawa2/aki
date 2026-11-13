@@ -741,10 +741,39 @@ var cpuStat = try String(contentsOf: proc.appending(path: "4244/stat"), encoding
 cpuStat = cpuStat.replacingOccurrences(of: "0 0 0 0 0 0 0 0 20", with: "0 0 0 0 20 5 0 0 20")
 try Data(cpuStat.utf8).write(to: proc.appending(path: "4244/stat"))
 let cpuAfter = cpuProc.cpuSample(of: 4244, at: 10.25)!
+#if os(Linux)
+var cpuTracker = AgentSessions.CPUTracker()
+check(AgentSessions.readsCPU("codex") && AgentSessions.readsCPU("claude") &&
+      AgentSessions.readsCPU("/Application Support/Claude/claude-code/1/MacOS/claude --input-format stream-json"),
+      "CPU sampling includes interactive agents and Claude app sessions")
+check(!AgentSessions.readsCPU("sleep 1") && !AgentSessions.readsCPU("aki wait") && !AgentSessions.readsCPU("codex exec"),
+      "CPU sampling excludes non-agents, wait listeners and headless commands")
+check(cpuTracker.needsBaseline([4244: cpuBefore]), "first readable agent needs a baseline")
+check(!cpuTracker.needsBaseline([:]), "unreadable agents do not trigger a sampling delay")
+_ = cpuTracker.update([4244: cpuBefore], using: cpuProc)
+check(!cpuTracker.needsBaseline([4244: cpuAfter]), "existing agent samples need no extra interval when unrelated processes appear")
+check(cpuTracker.update([4244: cpuAfter], using: cpuProc)[4244] == 100, "first pair of samples reports a working agent")
+let cpuIdle = cpuProc.cpuSample(of: 4244, at: 10.5)!
+check(cpuTracker.update([4244: cpuIdle], using: cpuProc)[4244] == 0, "each scan renews the sample even when an agent is idle")
+check(cpuTracker.update([4244: cpuIdle], using: cpuProc)[4244] == 0, "zero elapsed time stays idle")
+let cpuResumedStat = cpuStat.replacingOccurrences(of: "0 0 0 0 20 5 0 0 20", with: "0 0 0 0 45 5 0 0 20")
+try Data(cpuResumedStat.utf8).write(to: proc.appending(path: "4244/stat"))
+let cpuResumed = cpuProc.cpuSample(of: 4244, at: 10.75)!
+check(cpuTracker.update([4244: cpuResumed], using: cpuProc)[4244] == 100, "a resumed agent uses the latest idle sample, not a long-term average")
+try Data(cpuStat.utf8).write(to: proc.appending(path: "4244/stat"))
+_ = cpuTracker.update([:], using: cpuProc)
+check(cpuTracker.needsBaseline([4244: cpuIdle]), "vanished agents are removed from the sampling cache")
+_ = cpuTracker.update([4244: cpuIdle], using: cpuProc)
+#endif
 check(cpuProc.cpuPercent(from: cpuBefore, to: cpuAfter) == 100, "recent CPU counts user and system ticks, even for a long-lived process")
 check(cpuProc.cpuPercent(from: cpuAfter, to: cpuProc.cpuSample(of: 4244, at: 10.5)!) == 0, "a previous CPU burst becomes idle when ticks stop")
 try fakeProcess(4244, comm: "replacement", parent: 1, startTicks: 95_000)
 check(cpuProc.cpuPercent(from: cpuBefore, to: cpuProc.cpuSample(of: 4244, at: 11)!) == nil, "a reused PID never inherits CPU")
+#if os(Linux)
+let cpuReplacement = cpuProc.cpuSample(of: 4244, at: 11)!
+check(cpuTracker.needsBaseline([4244: cpuReplacement]), "reused agent PID needs a new baseline")
+check(cpuTracker.update([4244: cpuReplacement], using: cpuProc)[4244] == 0, "reused PID cannot inherit the previous agent's CPU")
+#endif
 check(cpuProc.cpuPercent(from: cpuBefore, to: cpuBefore) == nil, "zero sample interval has no CPU percentage")
 check(cpuProc.cpuSample(of: 9999, at: 12) == nil, "a vanished process has no CPU sample")
 #if os(Linux)

@@ -257,7 +257,33 @@ public enum AgentSessions {
     }
 
     #if os(Linux)
-    nonisolated(unsafe) private static var cpuSamples: [Int32: ProcFS.CPUSample] = [:]
+    /// Whether session/terminal readers consume this process's CPU.
+    public static func readsCPU(_ command: String) -> Bool {
+        if case .agent? = classify(command) { return true }
+        return isClaudeAppSession(command)
+    }
+
+    /// Pure sampling state: only successfully read agent samples enter the cache.
+    public struct CPUTracker {
+        private var samples: [Int32: ProcFS.CPUSample] = [:]
+
+        public init() {}
+
+        public func needsBaseline(_ current: [Int32: ProcFS.CPUSample]) -> Bool {
+            current.contains { pid, sample in samples[pid]?.startTicks != sample.startTicks }
+        }
+
+        public mutating func update(_ current: [Int32: ProcFS.CPUSample], using proc: ProcFS) -> [Int32: Double] {
+            var percentages: [Int32: Double] = [:]
+            for (pid, sample) in current {
+                percentages[pid] = samples[pid].flatMap { proc.cpuPercent(from: $0, to: sample) } ?? 0
+            }
+            samples = current
+            return percentages
+        }
+    }
+
+    nonisolated(unsafe) private static var cpuTracker = CPUTracker()
     private static let cpuLock = NSLock()
     #endif
 
@@ -265,33 +291,29 @@ public enum AgentSessions {
     private static func runningProcessesWithCPU() -> [Process] {
         let list = runningProcesses()
         #if os(Linux)
+        let agents = list.filter { readsCPU($0.command) }
         return cpuLock.withLock {
             let proc = ProcFS()
             func sample() -> [Int32: ProcFS.CPUSample] {
                 let now = ProcessInfo.processInfo.systemUptime
-                return Dictionary(list.compactMap { process in
+                return Dictionary(agents.compactMap { process in
                     proc.cpuSample(of: process.pid, at: now).map { (process.pid, $0) }
                 }, uniquingKeysWith: { first, _ in first })
             }
             var current = sample()
-            let needsBaseline = current.contains { pid, value in
-                cpuSamples[pid]?.startTicks != value.startTicks
-            }
-            if needsBaseline {
-                cpuSamples = current
-                // One shared interval for every PID, never one sleep per process.
+            if cpuTracker.needsBaseline(current) {
+                _ = cpuTracker.update(current, using: proc)
+                // One shared interval for readable agents, never one sleep per process.
                 Thread.sleep(forTimeInterval: 0.25)
                 current = sample()
             }
-            let result = list.map { process in
+            let percentages = cpuTracker.update(current, using: proc)
+            return list.map { process in
                 var process = process
-                process.cpu = cpuSamples[process.pid].flatMap { previous in
-                    current[process.pid].flatMap { proc.cpuPercent(from: previous, to: $0) }
-                } ?? 0
+                // DesktopApps' helper CPU reader is unreachable on Linux; non-agents stay zero.
+                process.cpu = percentages[process.pid] ?? 0
                 return process
             }
-            cpuSamples = current
-            return result
         }
         #else
         return list
