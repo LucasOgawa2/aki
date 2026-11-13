@@ -55,6 +55,13 @@ jobs:
         run: swift --version
       - name: Build
         run: swift build
+      - name: Checks
+        run: swift run AkiChecks
+      # The built binary itself: the version, and the usage (exit 0). No sessions, network or ~/.aki data.
+      - name: Command line
+        run: |
+          swift run aki --version
+          swift run aki
       - name: Verify clean working tree
         # If Package.resolved changes, run swift package resolve and commit the file.
         run: |
@@ -64,5 +71,3 @@ jobs:
             printf '%s\n' "$status"
             exit 1
           fi
-      - name: Checks
-        run: swift run AkiChecks
