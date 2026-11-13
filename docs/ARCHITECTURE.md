@@ -34,6 +34,7 @@ flowchart LR
 | `AkiChecks` | The checks, as an executable (`swift run AkiChecks`) — no Xcode needed. | `AkiCore` |
 
 On Linux the package builds `AkiCore`, the `aki` command (`main.swift` and `MCP/`, no app) and `AkiChecks`; swift-crypto stands in for CryptoKit there. Sparkle and the app never enter its build.
+The `#if os(Linux)` in `Package.swift` selects sources for the build host; cross-compilation (for example, `--swift-sdk` targeting Linux from a Mac) is not supported.
 
 ## Where things live
 
