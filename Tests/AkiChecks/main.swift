@@ -220,7 +220,15 @@ let pressureClient = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
 let warmClient = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
 var oldLimit = rlimit()
 _ = getrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &oldLimit)
-var smallLimit = rlimit(rlim_cur: 128, rlim_max: oldLimit.rlim_max)
+// Keep extra descriptors open to cover runners already above 128, when allowed.
+let initialDescriptors = try FileManager.default.contentsOfDirectory(atPath: "/proc/self/fd").count
+let extraDescriptors = min(140, max(0, Int(min(oldLimit.rlim_cur, 512)) - initialDescriptors - 32))
+let inheritedDescriptors = (0..<extraDescriptors).compactMap { _ -> Int32? in
+    let descriptor = dup(pressureClient)
+    return descriptor >= 0 ? descriptor : nil
+}
+let openDescriptors = try FileManager.default.contentsOfDirectory(atPath: "/proc/self/fd").count
+var smallLimit = rlimit(rlim_cur: min(rlim_t(openDescriptors + 32), oldLimit.rlim_max), rlim_max: oldLimit.rlim_max)
 let changedLimit = setrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &smallLimit) == 0
 var occupied: [Int32] = []
 if changedLimit {
@@ -244,6 +252,7 @@ let queued = withUnsafePointer(to: &pressureAddress) {
 usleep(60_000)
 for descriptor in occupied { close(descriptor) }
 close(warmClient)
+for descriptor in inheritedDescriptors { close(descriptor) }
 _ = setrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &oldLimit)
 var pressureTimeout = timeval(tv_sec: 2, tv_usec: 0)
 _ = setsockopt(pressureClient, SOL_SOCKET, SO_RCVTIMEO, &pressureTimeout, socklen_t(MemoryLayout<timeval>.size))
