@@ -130,7 +130,9 @@ public final class HTTPServer: @unchecked Sendable {
             case .pause:
                 Thread.sleep(forTimeInterval: 0.01)
                 continue
-            case .stop: return
+            case .stop:
+                FileHandle.standardError.write(Data("aki: annotations server stopped accepting: \(String(cString: strerror(failure)))\n".utf8))
+                return
             }
         }
     }
