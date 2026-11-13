@@ -1517,5 +1517,140 @@ check(LinuxMarking.sessions(environment: ["AKI_DRY_DELIVER": "1"], home: fakeSes
 check(LinuxMarking.sibling("aki-mark", of: "/home/u/.local/bin/aki") == "/home/u/.local/bin/aki-mark"
       && LinuxMarking.sibling("aki", of: "/opt/aki dir/aki-mark") == "/opt/aki dir/aki", "aki and aki-mark find each other in the same folder")
 
+print("linux marking: text read under an area (OCR)")
+var textMark = LinuxMarking.PortableMark(screen: 0, rect: .init(x: 10, y: 20, width: 300, height: 40), number: 1, selectedText: "Save changes\nCancel")
+check(LinuxMarking.fields(of: textMark, id: "aki_1_t", batch: "batch_1", terminal: plainSession, imagePath: "/h/t.jpg")["selected_text"] == "Save changes\nCancel",
+      "the text read under an area goes in selected_text")
+textMark.selectedText = String(repeating: "é", count: 4100)
+check(LinuxMarking.fields(of: textMark, id: "aki_1_t", batch: "batch_1", terminal: plainSession, imagePath: "/h/t.jpg")["selected_text"]
+      == .string(String(repeating: "é", count: 4000)), "cut at 4000 characters, as the Mac")
+textMark.selectedText = ""
+check(LinuxMarking.fields(of: textMark, id: "aki_1_t", batch: "batch_1", terminal: plainSession, imagePath: "/h/t.jpg")["selected_text"] == nil
+      && LinuxMarking.fields(of: areaMark, id: "aki_1_a", batch: "batch_1", terminal: orcaSession, imagePath: "/h/crop.jpg")["selected_text"] == nil,
+      "no text, or empty: no selected_text")
+
+typealias OCR = LinuxMarking.OCR
+let listLangs = "List of available languages in \"/usr/share/tesseract-ocr/5/tessdata/\" (3):\neng\nosd\npor\n"
+check(OCR.languages(fromListLangs: listLangs) == ["por", "eng"], "languages: Portuguese and English when installed, never osd")
+check(OCR.languages(fromListLangs: "List of available languages in \"/x/\" (2):\neng\nosd\n") == ["eng"], "only English: that")
+check(OCR.languages(fromListLangs: "List of available languages in \"/por/eng/\" (1):\nosd\n").isEmpty && OCR.languages(fromListLangs: "").isEmpty,
+      "neither (the heading's path doesn't count): none, no OCR")
+
+check(OCR.arguments(image: "/run/a.ppm", outputBase: "/run/a", languages: ["por", "eng"]) == ["/run/a.ppm", "/run/a", "-l", "por+eng", "--dpi", "300", "tsv"]
+      && OCR.arguments(image: "i", outputBase: "o", languages: ["eng"]) == ["i", "o", "-l", "eng", "--dpi", "300", "tsv"],
+      "tesseract's arguments: the image, the output's base, the languages, 300 dpi, TSV")
+check(OCR.scale(for: .init(width: 324, height: 64)) == 3 && OCR.scale(for: .init(width: 500, height: 555)) == 3,
+      "a small crop: 3x (500x555 at 3x is 2.497 MP)")
+check(OCR.scale(for: .init(width: 500, height: 556)) == 2 && OCR.scale(for: .init(width: 790, height: 790)) == 2, "too big for 3x: 2x")
+check(OCR.scale(for: .init(width: 791, height: 791)) == 1 && OCR.scale(for: .init(width: 1944, height: 1104)) == 1, "too big for 2x: as it is")
+
+let twoPixels: [UInt8] = [1, 2, 3, 4, 5, 6]
+check(OCR.ppm(rgb: twoPixels, size: .init(width: 2, height: 1), scale: 2) == Data("P6\n4 2\n255\n".utf8) + Data([1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6, 1, 2, 3, 1, 2, 3, 4, 5, 6, 4, 5, 6]),
+      "the crop as a P6 PPM, each pixel a 2x2 block")
+check(OCR.ppm(rgb: twoPixels, size: .init(width: 1, height: 2), scale: 1) == Data("P6\n1 2\n255\n".utf8) + Data(twoPixels), "scale 1: as it is")
+check(OCR.ppm(rgb: twoPixels, size: .init(width: 3, height: 1), scale: 1) == nil && OCR.ppm(rgb: [], size: .init(width: 0, height: 0), scale: 3) == nil
+      && OCR.ppm(rgb: twoPixels, size: .init(width: 2, height: 1), scale: 0) == nil, "bytes that aren't the size's, nothing, or no scale: none")
+
+let rightMonitor = LinuxMarking.Monitor(x: 1920, y: 0, width: 1920, height: 1080)
+let cornerMark = LinuxMarking.PortableMark(screen: 0, rect: .init(x: 0, y: 0, width: 100, height: 20), number: 1)
+check(OCR.region(for: cornerMark, on: rightMonitor) == .init(local: .init(x: 0, y: 0, width: 112, height: 32), root: .init(x: 1920, y: 0, width: 112, height: 32), scale: 3),
+      "an area in the corner of a monitor at x=1920: its crop held to the monitor, moved to the root only for the pixels")
+let hidpiMonitor = LinuxMarking.Monitor(x: 1280, y: 0, width: 1280, height: 720, scale: 2)
+check(OCR.region(for: .init(screen: 0, rect: .init(x: 100, y: 50, width: 1000, height: 500), number: 1), on: hidpiMonitor)
+      == .init(local: .init(x: 88, y: 38, width: 1024, height: 524), root: .init(x: 2648, y: 38, width: 1024, height: 524), scale: 2),
+      "scale 2 monitor: the root in device pixels; a big crop: 2x")
+check(OCR.region(for: .init(screen: 0, rect: .init(x: 5, y: 5, width: 0, height: 0), number: 1), on: rightMonitor) == nil
+      && OCR.region(for: .init(screen: 0, rect: .init(x: 4000, y: 5, width: 50, height: 50), number: 1), on: rightMonitor) == nil,
+      "a point reads nothing; an area off its monitor neither")
+
+// tesseract 5.3.4's TSV (levels 1-4 end in a tab, conf -1, no text), for a mark at
+// (100, 200) 300x40: its crop starts at (88, 188), read at 3x. Block 1 is the lower line.
+let tsvHeader = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+let tsvRegion = OCR.Region(local: .init(x: 88, y: 188, width: 324, height: 64), root: .init(x: 88, y: 188, width: 324, height: 64), scale: 3)
+let tsvRect = LinuxMarking.Rect(x: 100, y: 200, width: 300, height: 40)
+let tsv = tsvHeader + """
+1\t1\t0\t0\t0\t0\t0\t0\t972\t192\t-1\t
+2\t1\t1\t0\t0\t0\t60\t90\t400\t30\t-1\t
+3\t1\t1\t1\t0\t0\t60\t90\t400\t30\t-1\t
+4\t1\t1\t1\t1\t0\t60\t90\t400\t30\t-1\t
+5\t1\t1\t1\t1\t1\t60\t90\t110\t30\t96.87\tCancel
+5\t1\t1\t1\t1\t2\t180\t90\t30\t30\t-1\t~
+5\t1\t1\t1\t1\t3\t220\t90\t60\t30\t95.06\tthe
+5\t1\t1\t1\t1\t4\t290\t90\t120\t30\t1.22\torder
+2\t1\t2\t0\t0\t0\t60\t45\t230\t30\t-1\t
+4\t1\t2\t1\t1\t0\t60\t45\t230\t30\t-1\t
+5\t1\t2\t1\t1\t1\t60\t45\t90\t30\t84.6\tSave
+5\t1\t2\t1\t1\t2\t160\t45\t130\t30\t69.6\tchanges
+4\t1\t3\t1\t1\t0\t60\t150\t200\t30\t-1\t
+5\t1\t3\t1\t1\t1\t60\t150\t200\t30\t91.0\tcut
+4\t1\t4\t1\t1\t0\t300\t10\t30\t30\t-1\t
+5\t1\t4\t1\t1\t1\t300\t10\t30\t30\t-1\t
+5\t1\t4\t1\t1\t2\t340\t10
+"""
+check(OCR.text(fromTSV: tsv, region: tsvRegion, in: tsvRect) == "Save changes\nCancel the order",
+      "TSV: words joined per line, lines top to bottom whatever the block order; conf -1 dropped; the line cut at the edge (its middle outside) left out")
+let sideBySide = tsvHeader + """
+5\t1\t1\t1\t1\t1\t200\t66\t60\t30\t90\tRight
+5\t1\t2\t1\t1\t1\t60\t60\t60\t30\t90\tLeft
+"""
+check(OCR.text(fromTSV: sideBySide, region: tsvRegion, in: tsvRect) == "Left\nRight", "lines within 4 px of the same top: left to right, as the Mac")
+check(OCR.text(fromTSV: "", region: tsvRegion, in: tsvRect) == nil && OCR.text(fromTSV: tsvHeader, region: tsvRegion, in: tsvRect) == nil
+      && OCR.text(fromTSV: tsvHeader + "5\t1\t1\t1\t1\t1\t60\t45\t90\t30\t80\t   \n", region: tsvRegion, in: tsvRect) == nil,
+      "nothing read, only the header, or only blanks: no text")
+check(OCR.text(fromTSV: tsvHeader + "5\t1\t1\t1\t1\t1\t60\t45\t90\t30\t80\t\(String(repeating: "x", count: 5000))\n", region: tsvRegion, in: tsvRect)?.count == 4000,
+      "a huge read: cut at 4000")
+let cornerRegion = OCR.region(for: cornerMark, on: rightMonitor)!
+check(OCR.text(fromTSV: tsvHeader + "5\t1\t1\t1\t1\t1\t6\t6\t120\t30\t90\tFile\n5\t1\t2\t1\t1\t1\t310\t6\t30\t30\t90\tEdge\n", region: cornerRegion, in: cornerMark.rect) == "File",
+      "a mark at (0, 0) on the monitor at x=1920: lines placed in the monitor's own pixels (one past the mark's right edge out)")
+
+// A stand-in tesseract (the CI has none): it says how it was called and writes its TSV.
+let ocrHome = temp.appending(path: "ocr")
+let ocrRun = ocrHome.appending(path: "run")
+try FileManager.default.createDirectory(at: ocrRun, withIntermediateDirectories: true)
+func fakeTesseract(_ name: String, _ body: String) -> String {
+    let path = ocrHome.appending(path: name).path
+    _ = FileManager.default.createFile(atPath: path, contents: Data("#!/bin/sh\n\(body)\n".utf8), attributes: [.posixPermissions: 0o755])
+    return path
+}
+let calls = ocrHome.appending(path: "calls").path
+try Data((tsvHeader + "5\t1\t1\t1\t1\t1\t60\t45\t90\t30\t84.6\tSave\n").utf8).write(to: ocrHome.appending(path: "canned.tsv"))
+let goodTesseract = fakeTesseract("good", "echo \"$@\" > '\(calls)'; stat -c %a \"$1\" >> '\(calls)'; head -c 2 \"$1\" >> '\(calls)'; cp '\(ocrHome.appending(path: "canned.tsv").path)' \"$2.tsv\"")
+let tsvRGB = [UInt8](repeating: 255, count: 324 * 64 * 3)
+let readOK = OCR.read(rgb: tsvRGB, region: tsvRegion, in: tsvRect, tesseract: goodTesseract, languages: ["por", "eng"], directory: ocrRun)
+check(readOK == .success("Save"), "a read: tesseract's TSV, the text under the mark")
+let called = (try? String(contentsOfFile: calls, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+check(called.at(0)?.hasSuffix(" -l por+eng --dpi 300 tsv") == true && called.at(0)?.hasPrefix(ocrRun.path + "/aki-ocr-\(getpid())-") == true
+      && called.at(1) == "600" && called.at(2) == "P6", "the crop goes as a private (0600) PPM named aki-ocr-<pid>-…, in the folder given")
+check((try? FileManager.default.contentsOfDirectory(atPath: ocrRun.path))?.isEmpty == true, "and neither it nor the TSV is left")
+let failingTesseract = fakeTesseract("failing", "echo boom > \"$2.tsv\"; exit 1")
+check(OCR.read(rgb: tsvRGB, region: tsvRegion, in: tsvRect, tesseract: failingTesseract, languages: ["eng"], directory: ocrRun) == .failure(.failed)
+      && (try? FileManager.default.contentsOfDirectory(atPath: ocrRun.path))?.isEmpty == true, "tesseract failing: no text, nothing left")
+let slowTesseract = fakeTesseract("slow", "exec sleep 10")
+let slowStart = Date()
+check(OCR.read(rgb: tsvRGB, region: tsvRegion, in: tsvRect, tesseract: slowTesseract, languages: ["eng"], directory: ocrRun, timeout: 0.5) == .failure(.failed)
+      && Date().timeIntervalSince(slowStart) < 3 && (try? FileManager.default.contentsOfDirectory(atPath: ocrRun.path))?.isEmpty == true,
+      "tesseract not ending in time: stopped, no text, nothing left")
+let silentTesseract = fakeTesseract("silent", "rm -f \"$2.tsv\"; exit 0")
+check(OCR.read(rgb: tsvRGB, region: tsvRegion, in: tsvRect, tesseract: silentTesseract, languages: ["eng"], directory: ocrRun) == .failure(.noOutput),
+      "tesseract writing nothing: no text")
+let emptyTesseract = fakeTesseract("empty", "printf '' > \"$2.tsv\"")
+check(OCR.read(rgb: tsvRGB, region: tsvRegion, in: tsvRect, tesseract: emptyTesseract, languages: ["eng"], directory: ocrRun) == .success(nil),
+      "an area with no words: read, no text")
+check(OCR.read(rgb: tsvRGB, region: tsvRegion, in: tsvRect, tesseract: goodTesseract, languages: [], directory: ocrRun) == .failure(.noLanguages)
+      && OCR.read(rgb: [1, 2], region: tsvRegion, in: tsvRect, tesseract: goodTesseract, languages: ["eng"], directory: ocrRun) == .failure(.badImage)
+      && OCR.read(rgb: tsvRGB, region: tsvRegion, in: tsvRect, tesseract: goodTesseract, languages: ["eng"], directory: ocrHome.appending(path: "nope")) == .failure(.couldNotWrite),
+      "no language, pixels that don't fit, or a folder that isn't there: no text, tesseract not run")
+check(OCR.temporaryDirectory(environment: ["XDG_RUNTIME_DIR": ocrRun.path]).path == ocrRun.path
+      && OCR.temporaryDirectory(environment: ["XDG_RUNTIME_DIR": "/nonexistent-aki"]).path == FileManager.default.temporaryDirectory.path
+      && OCR.temporaryDirectory(environment: [:]).path == FileManager.default.temporaryDirectory.path, "crops go to XDG_RUNTIME_DIR when it's there, else the temporary folder")
+for (name, age) in [("aki-ocr-1-a.ppm", 3600.0), ("aki-ocr-1-a.tsv", 3600), ("aki-ocr-2-b.ppm", 0), ("other.ppm", 3600)] {
+    let path = ocrRun.appending(path: name).path
+    _ = FileManager.default.createFile(atPath: path, contents: Data())
+    try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-age)], ofItemAtPath: path)
+}
+OCR.removeStale(in: ocrRun, before: Date().addingTimeInterval(-60))
+check(Set((try? FileManager.default.contentsOfDirectory(atPath: ocrRun.path)) ?? []) == ["aki-ocr-2-b.ppm", "other.ppm"],
+      "at start, old crops of ours are removed; a fresh one (another read) and anything else stay")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)

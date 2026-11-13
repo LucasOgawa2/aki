@@ -39,14 +39,18 @@ public enum LinuxMarking {
         public var comment: String
         public var number: Int
         public var app: AppInfo?
+        /// The words under an area, read by OCR (the Mac's Vision text); nil until read, or none.
+        public var selectedText: String?
 
-        public init(id: UUID = UUID(), screen: Int, rect: Rect, comment: String = "", number: Int, app: AppInfo? = nil) {
+        public init(id: UUID = UUID(), screen: Int, rect: Rect, comment: String = "", number: Int, app: AppInfo? = nil,
+                    selectedText: String? = nil) {
             self.id = id
             self.screen = screen
             self.rect = rect
             self.comment = comment
             self.number = number
             self.app = app
+            self.selectedText = selectedText
         }
     }
 

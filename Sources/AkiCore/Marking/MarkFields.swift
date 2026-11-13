@@ -4,10 +4,11 @@ import Foundation
 /// (Sources/Aki/Marking/MarkingSession.swift): the same fields and the same folder
 /// (`marks/<day>/<code>/` with `mark.json` and `crop.jpg`). Differences from the Mac:
 /// - `source` is "linux", and `app` has no `bundle_id` (X11 windows have none);
-/// - the crop always goes (the Mac sends it only when `sendsImage` is on), because
-///   nothing reads the words under a mark here yet;
-/// - no `url`, `selected_text`, `element_context` nor `selector` (OCR and the browser
-///   come later);
+/// - the crop always goes (the Mac sends it only when `sendsImage` is on: there's no
+///   such toggle here);
+/// - `selected_text` is the words tesseract read under an area (the Mac's Vision), cut
+///   at 4000 characters as there; no `url`, `element_context` nor `selector` yet (the
+///   browser comes later);
 /// - one destination for the whole round (the Mac keeps one per mark).
 extension LinuxMarking {
     /// `aki_<ms>_<8 chars>`, as the Mac makes them.
@@ -29,6 +30,9 @@ extension LinuxMarking {
         ]
     }
 
+    /// The most of a mark's text that goes, as the Mac's `text(of:)`.
+    public static let textLimit = 4000
+
     public static func fields(
         of mark: PortableMark, id: String, batch: String, terminal: AgentTerminal, imagePath: String
     ) -> [String: JSONValue] {
@@ -47,6 +51,7 @@ extension LinuxMarking {
         if let name = mark.app?.name { app["name"] = .string(name) }
         if let window = mark.app?.window, !window.isEmpty { app["window"] = .string(window) }
         if !app.isEmpty { fields["app"] = .object(app) }
+        if let text = mark.selectedText, !text.isEmpty { fields["selected_text"] = .string(String(text.prefix(textLimit))) }
         fields.merge(sessionFields(of: terminal)) { _, new in new }
         return fields
     }
