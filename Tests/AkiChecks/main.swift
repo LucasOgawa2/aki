@@ -179,6 +179,15 @@ try lsof.run()
 lsof.waitUntilExit()
 let listening = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 check(listening.contains("127.0.0.1:\(port)") && !listening.contains("*:\(port)"), "listens on 127.0.0.1 only")
+#if os(Linux)
+check(Worktree.server(ofPort: Int(port))?.pid == getpid(), "procfs finds the check process's live listening socket")
+check(Worktree.ports(servedFrom: FileManager.default.currentDirectoryPath).contains(Int(port)), "procfs includes a live server in worktree port filtering")
+let liveLog = temp.appending(path: "rollout-live.jsonl")
+FileManager.default.createFile(atPath: liveLog.path, contents: Data())
+let liveLogHandle = try FileHandle(forReadingFrom: liveLog)
+check(CodexSessions.openLogs(of: [getpid()])[getpid()]?.contains(liveLog) == true, "Codex log discovery uses the process's real open descriptors")
+try liveLogHandle.close()
+#endif
 server.stop()
 
 // MARK: Worktrees, text, images
@@ -626,6 +635,23 @@ try Data("PATH=/bin\0ORCA_TERMINAL_HANDLE=term_1\0QUERY=a=b\0".utf8).write(to: p
 check(procFS.environment(of: 4242)?["ORCA_TERMINAL_HANDLE"] == "term_1", "a process's environment")
 check(procFS.environment(of: 4242)?["QUERY"] == "a=b", "a value keeps its own =")
 check(procFS.environment(of: 4243) == nil, "none when it can't be read")
+// Listening sockets and descriptors from a proc fixture, without invoking lsof.
+let net = proc.appending(path: "net")
+try FileManager.default.createDirectory(at: net, withIntermediateDirectories: true)
+try Data("  sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n 0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 800 1\n 1: 00000000:1F91 00000000:0000 0A 0 0 0 1000 0 801\n 2: 0100007F:1F92 00000000:0000 01 0 0 0 1000 0 802\n 3: 0100007F:1F93 00000000:0000 0A 0 0 0 1001 0 803\n".utf8).write(to: net.appending(path: "tcp"))
+try Data("  sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n 0: 00000000000000000000000001000000:1F94 0 0A 0 0 0 1000 0 804\n 1: 00000000000000000000000000000000:1F95 0 0A 0 0 0 1000 0 805\n".utf8).write(to: net.appending(path: "tcp6"))
+let descriptors = proc.appending(path: "4242/fd")
+try FileManager.default.createDirectory(at: descriptors, withIntermediateDirectories: true)
+for inode in [800, 801, 802, 804, 805] {
+    try FileManager.default.createSymbolicLink(atPath: descriptors.appending(path: "\(inode)").path, withDestinationPath: "socket:[\(inode)]")
+}
+try FileManager.default.createSymbolicLink(atPath: descriptors.appending(path: "9").path, withDestinationPath: "/logs/rollout-fixture.jsonl")
+let fixturePorts = Worktree.listeningPorts(lsof: procFS.listeningSockets(), host: "localhost")
+check(fixturePorts[8080] == 4242 && fixturePorts[8081] == 4242 && fixturePorts[8084] == 4242 && fixturePorts[8085] == 4242,
+      "procfs discovers IPv4/IPv6 loopback and wildcard listeners")
+check(fixturePorts[8082] == nil && fixturePorts[8083] == nil, "non-listening sockets and unreadable owners stay out")
+check(procFS.openFiles(of: 4242).contains("/logs/rollout-fixture.jsonl"), "procfs reads open file links")
+check(procFS.openFiles(of: 9999).isEmpty, "unreadable descriptor directories are empty")
 // CPU snapshots use the same stat fixture as parent/start-time discovery.
 let cpuProc = ProcFS(root: proc, ticksPerSecond: 100)
 let cpuBefore = cpuProc.cpuSample(of: 4244, at: 10)!

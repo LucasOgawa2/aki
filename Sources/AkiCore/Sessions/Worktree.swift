@@ -55,7 +55,11 @@ public enum Worktree {
 
     /// TCP port → pid for every listening socket of the current user.
     static func listeningPorts(host: String = "localhost") -> [Int: Int32] {
+        #if os(Linux)
+        listeningPorts(lsof: ProcFS().listeningSockets(), host: host)
+        #else
         listeningPorts(lsof: run(Command.lsof, ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fptn"]), host: host)
+        #endif
     }
 
     /// Two processes on one port (one on `[::1]:5173`, another on `*:5173`): the one the
@@ -94,8 +98,12 @@ public enum Worktree {
     }
 
     static func cwd(of pid: Int32) -> String? {
+        #if os(Linux)
+        return ProcFS().cwd(of: pid)
+        #else
         let output = run(Command.lsof, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])
         return output.split(separator: "\n").first { $0.hasPrefix("n") }.map { String($0.dropFirst()) }
+        #endif
     }
 
     private static func run(_ path: String, _ arguments: [String]) -> String {
