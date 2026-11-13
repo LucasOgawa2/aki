@@ -85,7 +85,7 @@ extension LinuxMarking {
 
 extension LinuxMarking {
     /// The first executable `name` in these folders (PATH's, then any extra ones).
-    static func executable(named name: String, path: String?, also extra: [String] = []) -> String? {
+    public static func executable(named name: String, path: String?, also extra: [String] = []) -> String? {
         ((path ?? "").split(separator: ":").filter { !$0.isEmpty }.map(String.init) + extra)
             .map { $0 + "/" + name }.first { FileManager.default.isExecutableFile(atPath: $0) }
     }

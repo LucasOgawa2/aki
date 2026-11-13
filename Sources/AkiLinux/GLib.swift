@@ -57,6 +57,15 @@ func onGtkThread(_ f: @escaping () -> Void) {
     }, data)
 }
 
+/// Runs once on GLib's loop after `milliseconds` (a deadline; GLib's own clock, no Dispatch).
+func onGtkThread(after milliseconds: UInt32, _ f: @escaping () -> Void) {
+    let data = Unmanaged.passRetained(Box(f) as AnyObject).toOpaque()
+    g_timeout_add(milliseconds, { data in
+        (Unmanaged<AnyObject>.fromOpaque(data!).takeRetainedValue() as! Box<() -> Void>).f()
+        return 0 // G_SOURCE_REMOVE
+    }, data)
+}
+
 /// A drawing area's draw function, with its own closure.
 func setDraw(_ area: UnsafeMutableRawPointer, _ f: @escaping (OpaquePointer, Int32, Int32) -> Void) {
     let data = Unmanaged.passRetained(Box(f) as AnyObject).toOpaque()

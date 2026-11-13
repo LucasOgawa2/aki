@@ -12,6 +12,7 @@ final class Overlay {
     private let monitors: [LinuxMarking.Monitor]
     private let gdkMonitors: [UnsafeMutableRawPointer]
     private let app: UnsafeMutableRawPointer
+    private let reader: TextReader?
     private var screens: [Screen] = []
     private var built = false
     private var closed = false
@@ -28,30 +29,33 @@ final class Overlay {
         let card: UnsafeMutableRawPointer
         let cardTitle: UnsafeMutableRawPointer
         let entry: UnsafeMutableRawPointer
+        let cardText: UnsafeMutableRawPointer
         let status: UnsafeMutableRawPointer
         let warning: UnsafeMutableRawPointer
 
         init(index: Int, window: UnsafeMutableRawPointer, area: UnsafeMutableRawPointer, card: UnsafeMutableRawPointer,
-             cardTitle: UnsafeMutableRawPointer, entry: UnsafeMutableRawPointer, status: UnsafeMutableRawPointer,
-             warning: UnsafeMutableRawPointer) {
+             cardTitle: UnsafeMutableRawPointer, entry: UnsafeMutableRawPointer, cardText: UnsafeMutableRawPointer,
+             status: UnsafeMutableRawPointer, warning: UnsafeMutableRawPointer) {
             self.index = index
             self.window = window
             self.area = area
             self.card = card
             self.cardTitle = cardTitle
             self.entry = entry
+            self.cardText = cardText
             self.status = status
             self.warning = warning
         }
     }
 
     init(app: UnsafeMutableRawPointer, capture: Capture, monitors: [(LinuxMarking.Monitor, UnsafeMutableRawPointer)],
-         sessions: [AgentTerminal]) {
+         sessions: [AgentTerminal], reader: TextReader?) {
         self.app = app
+        self.reader = reader
         self.capture = capture
         self.monitors = monitors.map(\.0)
         gdkMonitors = monitors.map(\.1)
-        state = LinuxMarking.OverlayState(sessions: sessions)
+        state = LinuxMarking.OverlayState(sessions: sessions, readsText: reader != nil)
     }
 
     /// GtkApplication's `activate`: the first builds the windows, later ones (the
@@ -78,8 +82,15 @@ final class Overlay {
         switch effect {
         case .close?: close()
         case let .send(marks, destination)?: send(marks, to: destination)
-        // Only asked for when the state reads text, which the next change turns on.
-        case .enrich?, .wait?, nil: break
+        case let .enrich(mark)?:
+            // From the end of the drag: usually read before Ctrl+Enter.
+            reader?.read(mark, capture: capture, monitors: monitors) { [weak self] text in
+                self?.dispatch(.enriched(id: mark.id, .init(text: text)))
+            }
+        case let .wait(token)?:
+            // As the Mac: a send waits for the reads up to 3 s, then goes with what it has.
+            onGtkThread(after: 3000) { [weak self] in self?.dispatch(.deadline(token)) }
+        case nil: break
         }
         if !closed { refresh() }
     }
@@ -240,6 +251,14 @@ final class Overlay {
         gtk_entry_set_placeholder_text(typed(entry), "What should the agent do here?")
         gtk_widget_set_size_request(typed(entry), 360, -1)
         gtk_box_append(typed(card), typed(entry))
+        // The start of the words read under it (or that they're being read).
+        let cardText = UnsafeMutableRawPointer(gtk_label_new(nil))!
+        gtk_widget_set_halign(typed(cardText), GTK_ALIGN_START)
+        gtk_label_set_ellipsize(typed(cardText), PANGO_ELLIPSIZE_END)
+        gtk_label_set_max_width_chars(typed(cardText), 48)
+        gtk_widget_add_css_class(typed(cardText), "aki-card-text")
+        gtk_widget_set_visible(typed(cardText), 0)
+        gtk_box_append(typed(card), typed(cardText))
         onSignal(entry, "changed") { [unowned self] in
             guard !self.syncing, let text = gtk_editable_get_text(OpaquePointer(entry)) else { return }
             self.dispatch(.draft(String(cString: text)))
@@ -275,13 +294,14 @@ final class Overlay {
             return true
         }
         gtk_window_fullscreen_on_monitor(typed(window), OpaquePointer(gdkMonitors[index]))
-        return Screen(index: index, window: window, area: area, card: card, cardTitle: cardTitle, entry: entry, status: status, warning: warning)
+        return Screen(index: index, window: window, area: area, card: card, cardTitle: cardTitle, entry: entry, cardText: cardText, status: status, warning: warning)
     }
 
     private func loadStyle() {
         let css = """
         .aki-card { background: rgba(28,28,30,0.96); color: white; border-radius: 10px; padding: 8px; border: 1px solid #ff9f0a; }
         .aki-card-title { font-weight: bold; color: #ff9f0a; }
+        .aki-card-text { color: rgba(255,255,255,0.7); font-size: smaller; }
         .aki-status { background: rgba(28,28,30,0.9); color: white; border-radius: 10px; padding: 6px 14px; }
         .aki-warning { background: #c62828; color: white; border-radius: 10px; padding: 6px 14px; font-weight: bold; }
         """
@@ -296,7 +316,9 @@ final class Overlay {
         let destination = state.sessions.firstIndex { $0.id == state.destination }
         let count = state.marks.count
         var parts = [count == 0 ? "Click a point or drag an area" : (count == 1 ? "1 mark" : "\(count) marks")]
-        if state.sending {
+        if state.waitingForReads {
+            parts.append("Reading text…")
+        } else if state.sending {
             parts.append("Sending…")
         } else if state.sessions.isEmpty {
             parts.append("No agent session open")
@@ -329,6 +351,10 @@ final class Overlay {
                 let current = gtk_editable_get_text(OpaquePointer(screen.entry)).map { String(cString: $0) } ?? ""
                 if current != state.draft { gtk_editable_set_text(OpaquePointer(screen.entry), state.draft) }
                 gtk_widget_set_sensitive(typed(screen.entry), state.sending ? 0 : 1)
+                let read = state.isPending(mark.id) ? "Reading text…"
+                    : mark.selectedText.map { "Text: " + ($0.split(whereSeparator: \.isNewline).first.map(String.init) ?? "") }
+                gtk_label_set_text(typed(screen.cardText), read ?? "")
+                gtk_widget_set_visible(typed(screen.cardText), read == nil ? 0 : 1)
                 gtk_widget_set_visible(typed(screen.card), 1)
                 if focused != mark.id {
                     focused = mark.id

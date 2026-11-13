@@ -11,6 +11,8 @@ func fail(_ message: String) -> Never {
 
 let environment = ProcessInfo.processInfo.environment
 let dry = environment["AKI_DRY_DELIVER"] == "1"
+// tesseract's OpenMP: one thread per read (they go one at a time anyway), set before anything starts threads.
+setenv("OMP_THREAD_LIMIT", "1", 1)
 
 if CommandLine.arguments.dropFirst().first == "--probe-capture" {
     // Not for people: the capture's size, the active window, and each half's mean brightness.
@@ -71,6 +73,14 @@ for i in 0..<g_list_model_get_n_items(list) {
 guard !monitors.isEmpty else { fail("GTK sees no monitor") }
 
 // The real listing before any window: the destination starts on the one used last.
-let overlay = Overlay(app: app, capture: capture, monitors: monitors, sessions: LinuxMarking.sessions { AgentSessions.terminals() })
+// The words under each area, when tesseract is installed.
+let reader = TextReader(environment: environment)
+if reader == nil { FileHandle.standardError.write(Data("aki-mark: no tesseract (apt install tesseract-ocr): marks go without text\n".utf8)) }
+reader?.prepare()
+let overlay = Overlay(app: app, capture: capture, monitors: monitors, sessions: LinuxMarking.sessions { AgentSessions.terminals() }, reader: reader)
 onSignal(app, "activate") { overlay.activate() }
-exit(g_application_run(typed(app), argc, CommandLine.unsafeArgv))
+let status = g_application_run(typed(app), argc, CommandLine.unsafeArgv)
+// The windows off the screen first, then any read still going ends and cleans up.
+gdk_display_flush(gdk_display_get_default())
+reader?.finish()
+exit(status)
