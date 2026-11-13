@@ -135,7 +135,9 @@ public final class HTTPServer: @unchecked Sendable {
                 let handler = handler
                 Task {
                     let response = await handler(request)
-                    Self.send(response, on: connection)
+                    DispatchQueue.global().async {
+                        Self.send(response, on: connection)
+                    }
                 }
                 return
             case .incomplete where count > 0:
