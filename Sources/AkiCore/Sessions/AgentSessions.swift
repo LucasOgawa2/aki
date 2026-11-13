@@ -166,7 +166,7 @@ public enum AgentSessions {
 
     /// One `ps` and one `lsof` for everything, so it's cheap to call every few seconds.
     public static func scan(pending: [Annotation] = []) -> [AgentSession] {
-        let all = runningProcesses()
+        let all = runningProcessesWithCPU()
         let processes = all.compactMap { p in classify(p.command).map { (p, $0) } }
         let apps = DesktopApps.running(in: all)
         guard !processes.isEmpty || !apps.isEmpty else { return [] }
@@ -254,6 +254,48 @@ public enum AgentSessions {
         }
         processesLock.withLock { processes = (list, Date()) }
         return list
+    }
+
+    #if os(Linux)
+    nonisolated(unsafe) private static var cpuSamples: [Int32: ProcFS.CPUSample] = [:]
+    private static let cpuLock = NSLock()
+    #endif
+
+    /// Only session/terminal scans need CPU. Command identity never waits for sampling.
+    private static func runningProcessesWithCPU() -> [Process] {
+        let list = runningProcesses()
+        #if os(Linux)
+        return cpuLock.withLock {
+            let proc = ProcFS()
+            func sample() -> [Int32: ProcFS.CPUSample] {
+                let now = ProcessInfo.processInfo.systemUptime
+                return Dictionary(list.compactMap { process in
+                    proc.cpuSample(of: process.pid, at: now).map { (process.pid, $0) }
+                }, uniquingKeysWith: { first, _ in first })
+            }
+            var current = sample()
+            let needsBaseline = current.contains { pid, value in
+                cpuSamples[pid]?.startTicks != value.startTicks
+            }
+            if needsBaseline {
+                cpuSamples = current
+                // One shared interval for every PID, never one sleep per process.
+                Thread.sleep(forTimeInterval: 0.25)
+                current = sample()
+            }
+            let result = list.map { process in
+                var process = process
+                process.cpu = cpuSamples[process.pid].flatMap { previous in
+                    current[process.pid].flatMap { proc.cpuPercent(from: previous, to: $0) }
+                } ?? 0
+                return process
+            }
+            cpuSamples = current
+            return result
+        }
+        #else
+        return list
+        #endif
     }
 
     /// Each process's folder, asked of the kernel directly (an `lsof` per pass cost
@@ -392,7 +434,7 @@ extension AgentSessions {
     /// `keeping`: destinations kept even when they'd be left out (the one you chose).
     /// `recent`: marks made lately, sent or not (one is something you sent that session).
     public static func terminals(pending: [Annotation] = [], recent: [Annotation] = [], keeping: Set<String> = []) -> [AgentTerminal] {
-        let all = runningProcesses()
+        let all = runningProcessesWithCPU()
         let processes = all.compactMap { p in classify(p.command).map { (p, $0) } }
         // Which sessions have an `aki wait` listening for them.
         let listening = Set(processes.compactMap { process, kind -> String? in

@@ -43,6 +43,27 @@ public struct ProcFS: Sendable {
         return Date(timeIntervalSince1970: boot + ticks / ticksPerSecond)
     }
 
+    public struct CPUSample: Sendable {
+        public let startTicks: UInt64
+        public let ticks: UInt64
+        public let at: Double
+    }
+
+    /// CPU counters and identity from one stat read; timestamps are monotonic seconds.
+    public func cpuSample(of pid: Int32, at: Double) -> CPUSample? {
+        guard let fields = stat(of: pid), fields.count > 19,
+              let user = UInt64(fields[11]), let system = UInt64(fields[12]),
+              let start = UInt64(fields[19]), user <= UInt64.max - system else { return nil }
+        return CPUSample(startTicks: start, ticks: user + system, at: at)
+    }
+
+    /// Recent CPU, rather than ps's lifetime average. Missing/reused processes have no delta.
+    public func cpuPercent(from previous: CPUSample, to current: CPUSample) -> Double? {
+        guard current.startTicks == previous.startTicks, current.ticks >= previous.ticks,
+              current.at > previous.at, ticksPerSecond > 0 else { return nil }
+        return Double(current.ticks - previous.ticks) / ticksPerSecond / (current.at - previous.at) * 100
+    }
+
     private func bootTime() -> Double? {
         guard let text = read("stat") else { return nil }
         return text.split(separator: "\n").first { $0.hasPrefix("btime ") }.flatMap { Double($0.dropFirst(6)) }

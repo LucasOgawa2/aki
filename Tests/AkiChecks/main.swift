@@ -626,6 +626,19 @@ try Data("PATH=/bin\0ORCA_TERMINAL_HANDLE=term_1\0QUERY=a=b\0".utf8).write(to: p
 check(procFS.environment(of: 4242)?["ORCA_TERMINAL_HANDLE"] == "term_1", "a process's environment")
 check(procFS.environment(of: 4242)?["QUERY"] == "a=b", "a value keeps its own =")
 check(procFS.environment(of: 4243) == nil, "none when it can't be read")
+// CPU snapshots use the same stat fixture as parent/start-time discovery.
+let cpuProc = ProcFS(root: proc, ticksPerSecond: 100)
+let cpuBefore = cpuProc.cpuSample(of: 4244, at: 10)!
+var cpuStat = try String(contentsOf: proc.appending(path: "4244/stat"), encoding: .utf8)
+cpuStat = cpuStat.replacingOccurrences(of: "0 0 0 0 0 0 0 0 20", with: "0 0 0 0 20 5 0 0 20")
+try Data(cpuStat.utf8).write(to: proc.appending(path: "4244/stat"))
+let cpuAfter = cpuProc.cpuSample(of: 4244, at: 10.25)!
+check(cpuProc.cpuPercent(from: cpuBefore, to: cpuAfter) == 100, "recent CPU counts user and system ticks, even for a long-lived process")
+check(cpuProc.cpuPercent(from: cpuAfter, to: cpuProc.cpuSample(of: 4244, at: 10.5)!) == 0, "a previous CPU burst becomes idle when ticks stop")
+try fakeProcess(4244, comm: "replacement", parent: 1, startTicks: 95_000)
+check(cpuProc.cpuPercent(from: cpuBefore, to: cpuProc.cpuSample(of: 4244, at: 11)!) == nil, "a reused PID never inherits CPU")
+check(cpuProc.cpuPercent(from: cpuBefore, to: cpuBefore) == nil, "zero sample interval has no CPU percentage")
+check(cpuProc.cpuSample(of: 9999, at: 12) == nil, "a vanished process has no CPU sample")
 #if os(Linux)
 check(ProcFS().parent(of: getpid()) == getppid(), "this process's parent, from the real /proc")
 check(ProcFS().cwd(of: getpid()) == FileManager.default.currentDirectoryPath, "and its folder")
