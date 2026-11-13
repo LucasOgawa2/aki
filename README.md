@@ -215,7 +215,7 @@ swift run AkiChecks   # checks
 python3 scripts/check-translations.py   # every language complete, no repeated text
 ```
 
-On Linux, only the core and the `aki` command build for now (no app, no marking): `swift build`, then `swift run AkiChecks`. `aki list`, `wait`, `show`, `done`, `delete`, `sessions`, `terminals`, `recent`, `usage`, `mcp`, `serve` and `--version` work. Process details, open logs and listening ports come from `/proc`; `lsof` is only needed to run `AkiChecks`.
+On Linux, only the core and the `aki` command build for now (no app, no marking): `swift build`, then `swift run AkiChecks`. `aki list`, `wait`, `show`, `done`, `delete`, `sessions`, `terminals`, `recent`, `usage`, `mcp`, `serve`, `move-to-mark-folders` and `--version` work. Running the CLI requires `ps` (procps). Process details, open logs and listening ports come from `/proc`; `lsof` is only needed to run `AkiChecks`.
 
 How it's built: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · how to help: [CONTRIBUTING.md](CONTRIBUTING.md) · what changed: [CHANGELOG.md](CHANGELOG.md) · security reports: [SECURITY.md](SECURITY.md).
 
