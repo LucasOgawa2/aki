@@ -988,5 +988,104 @@ check(ProcFS().cwd(of: getpid()) == FileManager.default.currentDirectoryPath, "a
 check(ProcFS().environment(of: getpid())?["PATH"] == ProcessInfo.processInfo.environment["PATH"], "and its environment")
 #endif
 
+// MARK: Linux marking (no interface)
+
+print("linux marking: fields")
+final class RandomParts: @unchecked Sendable {
+    private var left: [String]
+    private let lock = NSLock()
+    init(_ parts: [String]) { left = parts }
+    func next() -> String { lock.withLock { left.isEmpty ? "zzzzzzzz" : left.removeFirst() } }
+}
+let markRandom = RandomParts(["df9f68ee", "0a1b2c3d"])
+let markClock = LinuxMarking.Clock(now: { Date(timeIntervalSince1970: 1_791_339_895.5) }, random: { markRandom.next() })
+check(LinuxMarking.markID(at: Date(timeIntervalSince1970: 1_791_339_895.5), random: "df9f68ee") == "aki_1791339895500_df9f68ee", "a mark's id is aki_<ms>_<8 chars>, as on the Mac")
+check(LinuxMarking.batchID(at: markClock.now()) == "batch_1791339895500", "the batch id is batch_<ms>")
+let orcaSession = LinuxMarking.terminal(id: "s1", name: "SITE", worktree: "/repo/site", orcaHandle: "term_1")
+let plainSession = LinuxMarking.terminal(id: "codex:42", agent: .codex, name: "api", worktree: "/repo/api")
+check(LinuxMarking.sessionFields(of: orcaSession) == [
+    "session_id": "s1", "worktree": "/repo/site", "agent": "claude", "session_name": "SITE", "terminal_app": ["name": "Orca"],
+], "a session in an Orca tab: its identity, terminal_app Orca")
+check(LinuxMarking.sessionFields(of: plainSession)["terminal_app"] == .null, "no Orca handle: terminal_app null, as the Mac without an owner app")
+let areaMark = LinuxMarking.PortableMark(screen: 1, rect: .init(x: 10, y: 20, width: 300, height: 40), comment: "bigger", number: 2,
+                                         app: .init(name: "firefox", window: "Docs — Mozilla Firefox"))
+check(LinuxMarking.fields(of: areaMark, id: "aki_1_a", batch: "batch_1", terminal: orcaSession, imagePath: "/h/crop.jpg") == [
+    "id": "aki_1_a", "comment": "bigger", "status": "pending", "kind": "area", "batch_id": "batch_1", "number": 2, "source": "linux",
+    "rect": ["x": 10, "y": 20, "width": 300, "height": 40, "screen": 1],
+    "app": ["name": "firefox", "window": "Docs — Mozilla Firefox"],
+    "session_id": "s1", "worktree": "/repo/site", "agent": "claude", "session_name": "SITE", "terminal_app": ["name": "Orca"],
+    "image_path": "/h/crop.jpg",
+], "an area's fields: as the Mac's save, source linux, image always")
+let pointMark = LinuxMarking.PortableMark(screen: 0, rect: .init(x: 5, y: 6, width: 0, height: 0), number: 1, app: .init(name: nil, window: ""))
+let pointFields = LinuxMarking.fields(of: pointMark, id: "aki_1_b", batch: "batch_1", terminal: plainSession, imagePath: "/h/c.jpg")
+check(pointFields["kind"] == "point" && pointFields["app"] == nil && pointFields["comment"] == "", "a click is a point; no app name nor title: no app")
+
+let markHome = AkiHome(url: temp.appending(path: "mark-home"))
+let markStore = AnnotationStore(directory: markHome.url)
+let savedRound = await LinuxMarking.save([areaMark, pointMark], to: orcaSession, jpeg: { $0.number == 1 ? nil : Data([0xFF, 0xD8, 0xFF]) },
+                                         store: markStore, home: markHome, clock: markClock)
+check(savedRound.saved.map(\.id) == ["aki_1791339895500_df9f68ee"] && savedRound.failed == [pointMark.id], "a mark whose JPEG is missing fails and stays; the other is saved")
+let savedMark = await markStore.get("aki_1791339895500_df9f68ee")
+let savedFolder = MarkFolder.url(for: "aki_1791339895500_df9f68ee", created: markClock.now(), home: markHome)
+check(savedMark?["image_path"]?.string == savedFolder.appending(path: "crop.jpg").path
+      && (try? Data(contentsOf: savedFolder.appending(path: "crop.jpg"))) == Data([0xFF, 0xD8, 0xFF]), "the JPEG goes to the mark's folder as crop.jpg")
+check(FileManager.default.fileExists(atPath: savedFolder.appending(path: "mark.json").path), "and its record, mark.json, beside it")
+check(savedMark?["batch_id"] == "batch_1791339895500" && savedMark?["session_id"] == "s1", "saved with its batch and session")
+let dayFolder = savedFolder.deletingLastPathComponent()
+check((try? FileManager.default.contentsOfDirectory(atPath: dayFolder.path)) == ["df9f68ee"], "the failed mark leaves no folder behind")
+
+print("linux marking: crop")
+let monitor = LinuxMarking.PixelSize(width: 1920, height: 1080)
+check(LinuxMarking.cropRect(for: .init(x: 100, y: 200, width: 300, height: 40), screen: monitor) == .init(x: 88, y: 188, width: 324, height: 64),
+      "an area's crop: 12 px of room around it")
+check(LinuxMarking.cropRect(for: .init(x: 960, y: 540, width: 0, height: 0), screen: monitor) == .init(x: 740, y: 390, width: 440, height: 300),
+      "a point's crop: 440×300 around it")
+check(LinuxMarking.cropRect(for: .init(x: 10, y: 1070, width: 0, height: 0), screen: monitor) == .init(x: 0, y: 920, width: 230, height: 160),
+      "held to the screen's edges")
+check(LinuxMarking.cropRect(for: .init(x: 1900.5, y: 3.25, width: 30, height: 10), screen: monitor) == .init(x: 1888, y: 0, width: 32, height: 26),
+      "fractions widen to whole pixels (CGRect.integral), then the edge")
+check(LinuxMarking.cropRect(for: .init(x: 3000, y: 3000, width: 0, height: 0), screen: monitor) == nil, "a mark off the screen has no crop")
+check(LinuxMarking.encodedSize(of: .init(width: 2400, height: 600)) == .init(width: 1200, height: 300), "the JPEG's long side is at most 1200 px")
+check(LinuxMarking.encodedSize(of: .init(width: 333, height: 2000)) == .init(width: 199, height: 1200), "a tall crop too, rounded down as on the Mac")
+check(LinuxMarking.encodedSize(of: .init(width: 440, height: 300)) == .init(width: 440, height: 300), "a small crop keeps its size")
+check(LinuxMarking.encodedSize(of: .init(width: 5000, height: 1)) == nil && LinuxMarking.encodedSize(of: .init(width: 0, height: 0)) == nil,
+      "a crop that would shrink to nothing has no size")
+
+print("linux marking: X11 pixels")
+// 3×2 pixels, BGRx little-endian (the usual 24-bit depth), 4 bytes of padding per row.
+let bgrx: [UInt8] = [
+    0x03, 0x02, 0x01, 0, 0x06, 0x05, 0x04, 0, 0x09, 0x08, 0x07, 0, 0xEE, 0xEE, 0xEE, 0xEE,
+    0x13, 0x12, 0x11, 0, 0x16, 0x15, 0x14, 0, 0x19, 0x18, 0x17, 0, 0xEE, 0xEE, 0xEE, 0xEE,
+]
+let bgrxLayout = LinuxMarking.XImageLayout(width: 3, height: 2, bytesPerLine: 16, bitsPerPixel: 32, byteOrder: .lsbFirst,
+                                           redMask: 0xFF0000, greenMask: 0x00FF00, blueMask: 0x0000FF)
+check(LinuxMarking.rgb(of: bgrx, layout: bgrxLayout, crop: .init(x: 0, y: 0, width: 3, height: 2))
+      == [1, 2, 3, 4, 5, 6, 7, 8, 9, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19],
+      "BGRx little-endian to packed RGB, the row padding skipped")
+check(LinuxMarking.rgb(of: bgrx, layout: bgrxLayout, crop: .init(x: 1, y: 1, width: 2, height: 1)) == [0x14, 0x15, 0x16, 0x17, 0x18, 0x19],
+      "a crop from the middle")
+let xrgbBig: [UInt8] = [0, 0x01, 0x02, 0x03, 0, 0x04, 0x05, 0x06]
+let msbLayout = LinuxMarking.XImageLayout(width: 2, height: 1, bytesPerLine: 8, bitsPerPixel: 32, byteOrder: .msbFirst,
+                                          redMask: 0xFF0000, greenMask: 0x00FF00, blueMask: 0x0000FF)
+check(LinuxMarking.rgb(of: xrgbBig, layout: msbLayout, crop: .init(x: 0, y: 0, width: 2, height: 1)) == [1, 2, 3, 4, 5, 6], "MSBFirst (xRGB in memory)")
+let rgb24: [UInt8] = [0x03, 0x02, 0x01, 0x06, 0x05, 0x04, 0xEE, 0xEE]
+let layout24 = LinuxMarking.XImageLayout(width: 2, height: 1, bytesPerLine: 8, bitsPerPixel: 24, byteOrder: .lsbFirst,
+                                         redMask: 0xFF0000, greenMask: 0x00FF00, blueMask: 0x0000FF)
+check(LinuxMarking.rgb(of: rgb24, layout: layout24, crop: .init(x: 0, y: 0, width: 2, height: 1)) == [1, 2, 3, 4, 5, 6], "24 bits per pixel")
+var rgbxLayout = bgrxLayout
+(rgbxLayout.redMask, rgbxLayout.blueMask) = (0x0000FF, 0xFF0000)
+check(LinuxMarking.rgb(of: bgrx, layout: rgbxLayout, crop: .init(x: 0, y: 0, width: 1, height: 1)) == [3, 2, 1], "other masks: red where its mask says")
+var bpp16 = bgrxLayout
+bpp16.bitsPerPixel = 16
+var oddMask = bgrxLayout
+oddMask.greenMask = 0x00F0F0
+check(LinuxMarking.rgb(of: bgrx, layout: bpp16, crop: .init(x: 0, y: 0, width: 1, height: 1)) == nil
+      && LinuxMarking.rgb(of: bgrx, layout: oddMask, crop: .init(x: 0, y: 0, width: 1, height: 1)) == nil,
+      "nil for 16 bits per pixel or a mask that isn't 8 bits in a row")
+check(LinuxMarking.rgb(of: bgrx, layout: bgrxLayout, crop: .init(x: 2, y: 1, width: 2, height: 1)) == nil
+      && LinuxMarking.rgb(of: Array(bgrx.prefix(20)), layout: bgrxLayout, crop: .init(x: 0, y: 0, width: 3, height: 2)) == nil
+      && LinuxMarking.rgb(of: bgrx, layout: bgrxLayout, crop: .init(x: 0, y: 0, width: 0, height: 1)) == nil,
+      "nil for a crop outside the image, a short buffer or an empty crop")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)
