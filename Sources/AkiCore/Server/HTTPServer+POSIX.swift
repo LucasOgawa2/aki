@@ -66,6 +66,7 @@ public final class HTTPServer: @unchecked Sendable {
             listening = -1
             // The loop owns close. Keep shutdown under its closing lock so a reused
             // descriptor can never be shut down by an earlier stop call.
+            // This relies on shutdown waking blocked accept with EINVAL, observed on Linux but not guaranteed by accept(2).
             shutdown(fd, Int32(SHUT_RDWR))
         }
     }
