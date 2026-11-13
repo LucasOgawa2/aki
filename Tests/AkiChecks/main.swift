@@ -1,5 +1,8 @@
 import AkiCore
 import Foundation
+#if os(Linux)
+import Glibc
+#endif
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -189,6 +192,63 @@ check(CodexSessions.openLogs(of: [getpid()])[getpid()]?.contains(liveLog) == tru
 try liveLogHandle.close()
 #endif
 server.stop()
+
+#if os(Linux)
+// Exhaust descriptors only after creating the client, so connect can still queue
+// a connection while accept sees EMFILE. Restore the limit before Foundation I/O.
+let pressureServer = HTTPServer(port: 0) { _ in HTTPResponse(status: 200, body: Data("recovered".utf8)) }
+let pressurePort = try await pressureServer.start()
+let pressureClient = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+let warmClient = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+var oldLimit = rlimit()
+_ = getrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &oldLimit)
+var smallLimit = rlimit(rlim_cur: 128, rlim_max: oldLimit.rlim_max)
+let changedLimit = setrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &smallLimit) == 0
+var occupied: [Int32] = []
+if changedLimit {
+    while true {
+        let descriptor = dup(pressureClient)
+        if descriptor < 0 { break }
+        occupied.append(descriptor)
+    }
+}
+var pressureAddress = sockaddr_in()
+pressureAddress.sin_family = sa_family_t(AF_INET)
+pressureAddress.sin_port = pressurePort.bigEndian
+pressureAddress.sin_addr.s_addr = UInt32(INADDR_LOOPBACK).bigEndian
+_ = withUnsafePointer(to: &pressureAddress) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(warmClient, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+}
+usleep(30_000)
+let queued = withUnsafePointer(to: &pressureAddress) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(pressureClient, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+}
+usleep(60_000)
+for descriptor in occupied { close(descriptor) }
+close(warmClient)
+_ = setrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &oldLimit)
+var pressureTimeout = timeval(tv_sec: 2, tv_usec: 0)
+_ = setsockopt(pressureClient, SOL_SOCKET, SO_RCVTIMEO, &pressureTimeout, socklen_t(MemoryLayout<timeval>.size))
+let pressureRequest = Array("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".utf8)
+_ = pressureRequest.withUnsafeBytes { Glibc.send(pressureClient, $0.baseAddress, $0.count, Int32(MSG_NOSIGNAL)) }
+var pressureBuffer = [UInt8](repeating: 0, count: 1024)
+let recovered = recv(pressureClient, &pressureBuffer, pressureBuffer.count, 0)
+check(changedLimit && !occupied.isEmpty && queued == 0 && recovered > 0, "listener recovers after accept runs out of descriptors")
+close(pressureClient)
+pressureServer.stop()
+
+// A stopped accept loop must not close the descriptor of its successor.
+let retiring = HTTPServer(port: 0) { _ in HTTPResponse(status: 200) }
+_ = try await retiring.start()
+usleep(10_000)
+retiring.stop()
+retiring.stop()
+let successor = HTTPServer(port: 0) { _ in HTTPResponse(status: 200) }
+let successorPort = try await successor.start()
+let successorReply = try? await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(successorPort)/")!)
+check((successorReply?.1 as? HTTPURLResponse)?.statusCode == 200, "stopping a blocked accept loop leaves the next server alive")
+successor.stop()
+#endif
 
 // MARK: Worktrees, text, images
 

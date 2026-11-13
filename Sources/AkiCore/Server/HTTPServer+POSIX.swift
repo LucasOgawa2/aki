@@ -60,28 +60,43 @@ public final class HTTPServer: @unchecked Sendable {
     }
 
     public func stop() {
-        let fd = lock.withLock { () -> Int32 in
-            defer { listening = -1 }
-            return listening
+        lock.withLock {
+            guard listening >= 0 else { return }
+            let fd = listening
+            listening = -1
+            // The loop owns close. Keep shutdown under its closing lock so a reused
+            // descriptor can never be shut down by an earlier stop call.
+            shutdown(fd, Int32(SHUT_RDWR))
         }
-        guard fd >= 0 else { return }
-        // Wakes the thread blocked in accept, which then ends.
-        shutdown(fd, Int32(SHUT_RDWR))
-        close(fd)
     }
 
     private func acceptLoop(_ fd: Int32) {
+        defer {
+            lock.withLock {
+                if listening == fd { listening = -1 }
+                close(fd)
+            }
+        }
         while true {
+            guard lock.withLock({ listening == fd }) else { return }
+            // This toolchain's Glibc module does not expose accept4.
             let connection = accept(fd, nil, nil)
             if connection >= 0 {
-                // Not handed down to the programs Aki runs (git, lsof).
-                _ = fcntl(connection, F_SETFD, FD_CLOEXEC)
+                guard fcntl(connection, F_SETFD, FD_CLOEXEC) == 0,
+                      lock.withLock({ listening == fd }) else {
+                    close(connection)
+                    continue
+                }
                 DispatchQueue.global().async { [self] in serve(connection) }
                 continue
             }
-            if errno == EINTR || errno == ECONNABORTED { continue }
-            // Stopped (or the socket broke): no more connections.
-            lock.withLock { if listening == fd { listening = -1 } }
+            let failure = errno
+            guard lock.withLock({ listening == fd }) else { return }
+            if failure == EINTR || failure == ECONNABORTED { continue }
+            if failure == EMFILE || failure == ENFILE || failure == ENOBUFS || failure == ENOMEM {
+                Thread.sleep(forTimeInterval: 0.01)
+                continue
+            }
             return
         }
     }
@@ -89,7 +104,11 @@ public final class HTTPServer: @unchecked Sendable {
     private func serve(_ connection: Int32) {
         // A client that stops sending mid-request doesn't hold its thread for good.
         var timeout = timeval(tv_sec: 30, tv_usec: 0)
-        setsockopt(connection, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        guard setsockopt(connection, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
+              setsockopt(connection, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+            close(connection)
+            return
+        }
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
