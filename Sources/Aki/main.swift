@@ -28,6 +28,7 @@ let usage = {
     return text.replacingOccurrences(
         of: "  aki app                         open the app (sidebar + server)",
         with: "  aki terminals                   individual agent sessions running now\n  aki recent                      conversations from the last seven days"
+            + "\n  aki shortcut install|remove     GNOME's Shift+Super+A for aki mark\n  aki mark                        mark the screen for an agent (next: not available yet)"
     ).replacingOccurrences(of: "on this Mac", with: "on this machine")
     #else
     return text
@@ -222,6 +223,26 @@ do {
     #else
     case "visual-probe", "orca-tabs":
         fail("\(arguments[0]) is not available on Linux yet")
+
+    case "mark":
+        fail("aki mark is not available on Linux yet")
+
+    case "shortcut":
+        // GNOME's custom shortcut for `aki mark` (no other desktop yet).
+        let action = arguments.dropFirst().first
+        guard action == "install" || action == "remove", arguments.count == 2 else { fail("usage: aki shortcut install|remove") }
+        guard let gsettings = GnomeShortcut.gsettings() else { fail("gsettings not found: the shortcut is for GNOME") }
+        let runner = GnomeShortcut.ProcessRunner(executable: gsettings)
+        let report: GnomeShortcut.Report
+        if action == "install" {
+            guard let executable = LinuxMarking.currentExecutable() else { fail("can't tell where this aki is (/proc/self/exe)") }
+            report = GnomeShortcut.install(executable: executable, runner: runner)
+        } else {
+            report = GnomeShortcut.remove(runner: runner)
+        }
+        guard report.ok else { fail(report.message) }
+        print(report.message)
+        if let warning = report.warning { FileHandle.standardError.write(Data("aki: \(warning)\n".utf8)) }
     #endif
 
     case "sessions":

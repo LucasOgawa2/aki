@@ -1370,5 +1370,86 @@ check(orphan.destination == "b" && orphan.handle(.send) == nil && !orphan.sendin
 _ = orphan.handle(.nextDestination)
 check(orphan.destination == "a" && orphan.warning == nil, "choosing again clears the warning")
 
+print("linux marking: GNOME shortcut")
+struct FakeGSettingsTimeout: GSettingsRunner {
+    func run(_ arguments: [String]) -> Command.Outcome { .timedOut }
+}
+final class FakeGSettings: GSettingsRunner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [[String]] = []
+    let list: String
+    let failing: String?
+    init(list: String, failing: String? = nil) {
+        self.list = list
+        self.failing = failing
+    }
+    var ran: [[String]] { lock.withLock { calls } }
+    var writes: [[String]] { ran.filter { $0.first != "get" } }
+    func run(_ arguments: [String]) -> Command.Outcome {
+        lock.withLock { calls.append(arguments) }
+        if let failing, arguments.contains(failing) { return .exited(status: 1, output: Data()) }
+        return .exited(status: 0, output: Data((arguments.first == "get" ? list + "\n" : "").utf8))
+    }
+}
+let mediaKeys = "org.gnome.settings-daemon.plugins.media-keys"
+let akiKey = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/aki/"
+let custom0 = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/"
+let custom1 = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1/"
+// Expected values worked out with GLib itself (python3-gi: g_shell_parse_argv, GVariant.parse).
+let oddAki = #"/home/u/my dir/it's "q"/aki"#
+check(GnomeShortcut.command(executable: oddAki) == #"'/home/u/my dir/it'\''s "q"/aki' mark"#, "the command: the path quoted for g_shell_parse_argv, then mark")
+check(GnomeShortcut.gvariantString(GnomeShortcut.command(executable: oddAki)) == #"'\'/home/u/my dir/it\'\\\'\'s "q"/aki\' mark'"#,
+      "then as a GVariant string")
+check(GnomeShortcut.parseList("@as []") == [] && GnomeShortcut.parseList("[]") == [], "an empty list, typed or not")
+check(GnomeShortcut.parseList("['\(custom0)', '\(custom1)']") == [custom0, custom1], "a list with others")
+check(GnomeShortcut.parseList(#"['/a/', "/b'/", '/c\'d/']"#) == ["/a/", "/b'/", "/c'd/"], "quoted either way, escapes read")
+check(GnomeShortcut.parseList("['/a/'") == nil && GnomeShortcut.parseList("nonsense") == nil && GnomeShortcut.parseList("['/a/' '/b/']") == nil,
+      "anything strange: nil")
+check(GnomeShortcut.formatList([]) == "@as []" && GnomeShortcut.formatList(["/a/", "/b'/"]) == #"['/a/', '/b\'/']"#, "the list written back")
+
+let freshGS = FakeGSettings(list: "@as []")
+let freshInstall = GnomeShortcut.install(executable: "/usr/local/bin/aki", runner: freshGS)
+check(freshInstall.ok && freshInstall.warning == nil && freshGS.writes == [
+    ["set", akiKey, "name", "'Aki'"],
+    ["set", akiKey, "command", "'\\'/usr/local/bin/aki\\' mark'"],
+    ["set", akiKey, "binding", "'<Shift><Super>a'"],
+    ["set", mediaKeys, "custom-keybindings", "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/aki/']"],
+], "install on an empty list: the three keys, then the path in the list")
+check(freshGS.ran.first == ["get", mediaKeys, "custom-keybindings"], "the list read first")
+let othersGS = FakeGSettings(list: "['\(custom0)', '\(custom1)']")
+_ = GnomeShortcut.install(executable: "/usr/local/bin/aki", runner: othersGS)
+check(othersGS.writes.last == ["set", mediaKeys, "custom-keybindings", "['\(custom0)', '\(custom1)', '\(GnomeShortcut.path)']"],
+      "the shortcuts already there stay")
+let againGS = FakeGSettings(list: "['\(custom0)', '\(GnomeShortcut.path)']")
+let again = GnomeShortcut.install(executable: "/usr/local/bin/aki", runner: againGS)
+check(again.ok && againGS.writes.count == 3 && !againGS.writes.contains { $0.contains("custom-keybindings") }, "installed already: the keys renewed, the list untouched")
+let buildGS = FakeGSettings(list: "@as []")
+let fromBuild = GnomeShortcut.install(executable: "/home/u/aki/.build/debug/aki", runner: buildGS)
+check(fromBuild.ok && fromBuild.warning == "This aki is inside .build: the shortcut breaks if that build goes away.", "from a build folder: installed, with a warning")
+let strangeGS = FakeGSettings(list: "{'what': 1}")
+check(!GnomeShortcut.install(executable: "/usr/local/bin/aki", runner: strangeGS).ok && strangeGS.writes.isEmpty, "a list it can't read: nothing written")
+let failingGS = FakeGSettings(list: "@as []", failing: "binding")
+let failedInstall = GnomeShortcut.install(executable: "/usr/local/bin/aki", runner: failingGS)
+check(!failedInstall.ok && !failingGS.writes.contains { $0.contains("custom-keybindings") }, "a key that can't be written: the list isn't touched")
+
+let removeGS = FakeGSettings(list: "['\(custom0)', '\(GnomeShortcut.path)', '\(custom1)']")
+let removed = GnomeShortcut.remove(runner: removeGS)
+check(removed.ok && removeGS.writes == [
+    ["set", mediaKeys, "custom-keybindings", "['\(custom0)', '\(custom1)']"],
+    ["reset", akiKey, "name"], ["reset", akiKey, "command"], ["reset", akiKey, "binding"],
+], "remove: out of the list first, then its keys reset; the others stay")
+let removeLastGS = FakeGSettings(list: "['\(GnomeShortcut.path)']")
+_ = GnomeShortcut.remove(runner: removeLastGS)
+check(removeLastGS.writes.first == ["set", mediaKeys, "custom-keybindings", "@as []"], "the last one out: an empty list")
+let notThereGS = FakeGSettings(list: "['\(custom0)']")
+let notThere = GnomeShortcut.remove(runner: notThereGS)
+check(notThere.ok && notThereGS.writes.count == 3 && notThereGS.writes.allSatisfy { $0.first == "reset" }, "remove when it isn't there: only the keys reset")
+let slowGS = FakeGSettingsTimeout()
+check(!GnomeShortcut.install(executable: "/usr/local/bin/aki", runner: slowGS).ok
+      && GnomeShortcut.install(executable: "/usr/local/bin/aki", runner: slowGS).message == "gsettings didn't answer in time.", "gsettings not answering: fails, says so")
+_ = FileManager.default.createFile(atPath: orcaBin.appending(path: "gsettings").path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+check(GnomeShortcut.gsettings(path: "/nonexistent") == nil && GnomeShortcut.gsettings(path: "/nonexistent:" + orcaBin.path) == orcaBin.appending(path: "gsettings").path,
+      "gsettings found on PATH")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)
