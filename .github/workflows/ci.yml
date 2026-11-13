@@ -57,7 +57,7 @@ jobs:
         run: swift build
       - name: Checks
         run: swift run AkiChecks
-      # The built binary itself: the version, and the usage (exit 0). No sessions, network or ~/.aki data.
+      # The built binary itself: the version, and the usage (exit 0). It reads ps and ~/.claude/sessions and writes nothing.
       - name: Command line
         run: |
           swift run aki --version
