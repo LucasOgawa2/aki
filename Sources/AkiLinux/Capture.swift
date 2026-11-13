@@ -8,6 +8,8 @@ struct Capture {
     var bytes: [UInt8]
     var layout: LinuxMarking.XImageLayout
     var app: LinuxMarking.AppInfo?
+    /// Where the pointer was, in root pixels (its monitor's overlay takes the keyboard).
+    var pointer: LinuxMarking.Point?
 
     enum Failure: Error, CustomStringConvertible {
         case noDisplay, noImage, unsupported(String)
@@ -30,6 +32,9 @@ struct Capture {
         let root = XDefaultRootWindow(display)
         let width = UInt32(XDisplayWidth(display, screen)), height = UInt32(XDisplayHeight(display, screen))
         let app = activeApp(display, root: root)
+        var rootReturn: Window = 0, child: Window = 0, rootX: Int32 = 0, rootY: Int32 = 0, winX: Int32 = 0, winY: Int32 = 0, mask: UInt32 = 0
+        let pointer = XQueryPointer(display, root, &rootReturn, &child, &rootX, &rootY, &winX, &winY, &mask) != 0
+            ? LinuxMarking.Point(x: Double(rootX), y: Double(rootY)) : nil
         // AllPlanes, ZPixmap (macros that don't import).
         guard let image = XGetImage(display, root, 0, 0, width, height, ~0, ZPixmap) else { throw Failure.noImage }
         defer { _ = image.pointee.f.destroy_image(image) }
@@ -45,7 +50,7 @@ struct Capture {
         }
         let count = Int(x.bytes_per_line) * Int(x.height)
         let bytes = data.withMemoryRebound(to: UInt8.self, capacity: count) { Array(UnsafeBufferPointer(start: $0, count: count)) }
-        return Capture(bytes: bytes, layout: layout, app: app)
+        return Capture(bytes: bytes, layout: layout, app: app, pointer: pointer)
     }
 
     /// `_NET_ACTIVE_WINDOW`'s `WM_CLASS` and `_NET_WM_NAME` (nil when there's none).
