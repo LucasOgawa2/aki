@@ -311,7 +311,8 @@ do {
     var reply = [UInt8](repeating: 0, count: 4096)
     let count = recv(client, &reply, reply.count, 0)
     let elapsed = ProcessInfo.processInfo.systemUptime - started
-    check(client >= 0 && sent && count > 0 && String(decoding: reply.prefix(max(0, count)), as: UTF8.self).hasPrefix("HTTP/1.1 503 ") && elapsed < 2,
+    let text = String(decoding: reply.prefix(max(0, count)), as: UTF8.self)
+    check(client >= 0 && sent && count > 0 && text.hasPrefix("HTTP/1.1 503 Service Unavailable\r\n") && elapsed < 2,
           "stalled handler receives 503 within two seconds (\(elapsed) s)")
 }
 
