@@ -1087,5 +1087,188 @@ check(LinuxMarking.rgb(of: bgrx, layout: bgrxLayout, crop: .init(x: 2, y: 1, wid
       && LinuxMarking.rgb(of: bgrx, layout: bgrxLayout, crop: .init(x: 0, y: 0, width: 0, height: 1)) == nil,
       "nil for a crop outside the image, a short buffer or an empty crop")
 
+print("linux marking: delivery text")
+var promptSession = LinuxMarking.terminal(id: "s1", name: "SITE `x`", worktree: "/repo/site")
+promptSession.pendingIDs = ["aki_1_df9f68ee", "aki_2_0a1b2c3d"]
+promptSession.pendingComments = ["(no text)", "make the `button` bigger and blue, with a softer shadow too please"]
+promptSession.pending = 2
+promptSession.undelivered = 2
+promptSession.pendingPlaces = ["firefox", "Orca", "code"]
+check(LinuxMarking.deliveryPrompt(for: promptSession, aki: "aki")
+      == "📍 Aki → SITE 'x': 2 marcas novas (de firefox, Orca) — #0a1b2c · #df9f68 “make the 'button' bigger and blue, with a softer s…”."
+      + " Leia com `aki show df9f68ee 0a1b2c3d` (abra a foto só se o pedido for visual), resolva e feche com `aki done df9f68ee 0a1b2c3d`."
+      + " Se não forem para esta sessão, avise antes de mexer.",
+      "the message typed to the agent: the Mac's own words, codes newest first beside their comments")
+var oneMark = LinuxMarking.terminal(id: "s1", name: "api", worktree: "/repo/api")
+oneMark.pendingIDs = ["note_1"]
+oneMark.pendingComments = ["fix\nthis"]
+check(LinuxMarking.deliveryPrompt(for: oneMark, aki: "'/opt/my aki/aki'")
+      == "📍 Aki → api: 1 marca nova — #1 “fix this”. Leia com `'/opt/my aki/aki' list` (abra a foto só se o pedido for visual), resolva e feche com `'/opt/my aki/aki' done <códigos>`."
+      + " Se não forem para esta sessão, avise antes de mexer.",
+      "a mark from elsewhere: the session's list, never a code")
+check(LinuxMarking.akiInvocation(executable: "/home/u/.local/bin/aki", akiOnPath: "/home/u/.local/bin/aki") == "aki",
+      "the aki on PATH is this one: plain aki")
+check(LinuxMarking.akiInvocation(executable: "/home/u/it's here/aki", akiOnPath: "/usr/bin/aki") == "'/home/u/it'\\''s here/aki'"
+      && LinuxMarking.akiInvocation(executable: "/b/aki", akiOnPath: nil) == "'/b/aki'",
+      "another aki on PATH, or none: this one's path, quoted for the shell")
+check(LinuxMarking.executablePath(fromProcLink: "/repo/.build/debug/aki (deleted)") == "/repo/.build/debug/aki"
+      && LinuxMarking.executablePath(fromProcLink: "/usr/bin/aki") == "/usr/bin/aki",
+      "/proc/self/exe of a binary rebuilt meanwhile: without \" (deleted)\"")
+
+print("linux marking: Orca")
+check(Command.outcome("/bin/sleep", ["3"], timeout: 0.3) == .timedOut, "a program that doesn't end in time: timed out, not failed")
+check(Command.outcome("/bin/sh", ["-c", "echo hi; exit 3"]) == .exited(status: 3, output: Data("hi\n".utf8)), "its status and output however it ended")
+check(Command.outcome("/nonexistent/orca-ide", []) == .couldNotStart, "a missing program couldn't start")
+check(LinuxMarking.sendArguments(handle: "term_1", prompt: "📍 hi") == ["terminal", "send", "--terminal", "term_1", "--text", "📍 hi", "--enter", "--json"],
+      "one send with Enter, no --retry-request")
+let orcaHome = temp.appending(path: "orca-home")
+let orcaBin = orcaHome.appending(path: ".local/bin")
+try FileManager.default.createDirectory(at: orcaBin, withIntermediateDirectories: true)
+let fakeOrcaIDE = orcaBin.appending(path: "orca-ide"), fakeOrca = orcaHome.appending(path: "orca")
+for file in [fakeOrcaIDE, fakeOrca] {
+    _ = FileManager.default.createFile(atPath: file.path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+}
+check(LinuxMarking.orcaExecutable(path: orcaHome.path, home: temp.appending(path: "nobody")) == nil,
+      "never `orca` (outside Orca that's GNOME's screen reader)")
+check(LinuxMarking.orcaExecutable(path: "/nonexistent:" + orcaBin.path, home: temp) == fakeOrcaIDE.path, "orca-ide on PATH")
+check(LinuxMarking.orcaExecutable(path: "/nonexistent", home: orcaHome) == fakeOrcaIDE.path, "else in ~/.local/bin")
+let dryHome = AkiHome(url: temp.appending(path: "dry-home"))
+let dry = LinuxMarking.orcaRunner(environment: ["AKI_DRY_DELIVER": "1", "PATH": orcaBin.path], akiHome: dryHome, home: orcaHome)
+check(dry is LinuxMarking.DryOrcaRunner, "AKI_DRY_DELIVER=1: the runner only writes down what it would run")
+check(LinuxMarking.orcaRunner(environment: ["PATH": orcaBin.path], akiHome: dryHome, home: orcaHome).map { ($0 as? LinuxMarking.ProcessOrcaRunner)?.executable } == fakeOrcaIDE.path,
+      "else the real orca-ide")
+check(LinuxMarking.orcaRunner(environment: ["PATH": "/nonexistent"], akiHome: dryHome, home: temp) == nil, "no orca-ide: no runner")
+let drySent = dry?.run(["terminal", "send", "--text", "a \"b\""])
+_ = dry?.run(["terminal", "list", "--json"])
+let dryLines = ((try? String(contentsOf: dryHome.url.appending(path: "dry-deliver.log"), encoding: .utf8)) ?? "").split(separator: "\n")
+check(dryLines.count == 2 && (try? JSONSerialization.jsonObject(with: Data(dryLines[0].utf8)) as? [String]) == ["terminal", "send", "--text", "a \"b\""],
+      "each run a JSON array on its own line in $AKI_HOME/dry-deliver.log")
+check(drySent.flatMap { if case .exited(0, let data) = $0 { return (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["ok"] as? Bool } else { return nil } } == true,
+      "and answers as a send that went")
+try FileManager.default.createDirectory(at: dryHome.url, withIntermediateDirectories: true)
+try Data(#"{"ok":true,"result":{"terminals":[{"handle":"term_9","worktreePath":"/repo"}]}}"#.utf8)
+    .write(to: dryHome.url.appending(path: "dry-terminals.json"))
+check(dry?.run(["terminal", "list", "--json", "--limit", "200"]) == .exited(status: 0, output: Data(#"{"ok":true,"result":{"terminals":[{"handle":"term_9","worktreePath":"/repo"}]}}"#.utf8)),
+      "its tab list: $AKI_HOME/dry-terminals.json when there is one")
+check(LinuxMarking.ProcessOrcaRunner(executable: "/bin/echo").run(["terminal", "list"]) == .exited(status: 0, output: Data("terminal list\n".utf8)),
+      "the real runner runs the program it was given")
+#if os(Linux)
+let akiLink = orcaBin.appending(path: "aki")
+try FileManager.default.createSymbolicLink(at: akiLink, withDestinationURL: fakeOrcaIDE)
+check(LinuxMarking.akiOnPath("/nonexistent:" + orcaBin.path) == fakeOrcaIDE.path && LinuxMarking.akiOnPath("/nonexistent") == nil,
+      "the aki on PATH, its link followed; none: nil")
+#endif
+
+print("linux marking: delivery")
+final class FakeOrca: OrcaRunner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [[String]] = []
+    let tabs: Command.Outcome, send: Command.Outcome
+    init(tabs: Command.Outcome, send: Command.Outcome = .exited(status: 0, output: Data(#"{"ok":true}"#.utf8))) {
+        self.tabs = tabs
+        self.send = send
+    }
+    var ran: [[String]] { lock.withLock { calls } }
+    var sends: [[String]] { ran.filter { $0.starts(with: ["terminal", "send"]) } }
+    func run(_ arguments: [String]) -> Command.Outcome {
+        lock.withLock { calls.append(arguments) }
+        return arguments.starts(with: ["terminal", "list"]) ? tabs : send
+    }
+}
+let siteTab = Command.Outcome.exited(status: 0, output: Data(#"{"ok":true,"result":{"terminals":[{"handle":"term_1","worktreePath":"/repo"}]}}"#.utf8))
+let jpegBytes: (LinuxMarking.PortableMark) -> Data? = { _ in Data([0xFF, 0xD8]) }
+func deliveryWorld(_ name: String) -> (AkiHome, AnnotationStore) {
+    let home = AkiHome(url: temp.appending(path: "deliver-\(name)"))
+    return (home, AnnotationStore(directory: home.url))
+}
+let siteSession = LinuxMarking.terminal(id: "s1", name: "SITE", worktree: "/repo/site", orcaHandle: "term_1")
+let otherSession = LinuxMarking.terminal(id: "s2", name: "API", worktree: "/repo/api", orcaHandle: "term_2")
+let firstMark = LinuxMarking.PortableMark(screen: 0, rect: .init(x: 1, y: 1, width: 50, height: 50), comment: "first", number: 1, app: .init(name: "firefox"))
+let secondMark = LinuxMarking.PortableMark(screen: 0, rect: .init(x: 9, y: 9, width: 0, height: 0), comment: "", number: 2)
+
+let (sentHome, sentStore) = deliveryWorld("sent")
+_ = try await sentStore.upsert(Annotation(["id": "aki_1_00000001", "session_id": "s1", "worktree": "/repo/site", "comment": "old",
+                                           "created_at": "2026-01-01T00:00:00Z", "delivered_at": "2026-01-01T00:00:01Z"]))
+_ = try await sentStore.upsert(Annotation(["id": "aki_1_00000002", "session_id": "s2", "worktree": "/repo/site", "comment": "theirs",
+                                           "created_at": "2026-01-01T00:00:00Z"]))
+_ = try await sentStore.upsert(Annotation(["id": "aki_1_00000003", "worktree": "/repo/site", "comment": "by folder",
+                                           "created_at": "2026-01-01T00:00:00Z"]))
+let sentOrca = FakeOrca(tabs: siteTab)
+let sentClock = LinuxMarking.Clock(now: { Date(timeIntervalSince1970: 1_791_339_895.5) }, random: RandomParts(["aaaaaaa1", "aaaaaaa2"]).next)
+let sent = await LinuxMarking.deliver([firstMark, secondMark], to: "s1", sessions: [otherSession, siteSession], jpeg: jpegBytes,
+                                      store: sentStore, home: sentHome, orca: sentOrca, aki: "aki", clock: sentClock)
+check(sent.outcome == .sent && sent.saved.count == 2 && sent.failed.isEmpty, "saved and typed")
+check(sentOrca.ran.first.map { Array($0.prefix(2)) } == ["terminal", "list"] && sentOrca.sends.count == 1, "the tab checked first, then one send")
+let typed = sentOrca.sends.first ?? []
+check(typed.count == 8 && Array(typed.prefix(5)) == ["terminal", "send", "--terminal", "term_1", "--text"] && Array(typed.suffix(2)) == ["--enter", "--json"],
+      "typed into the session's own tab")
+check(typed.count > 5 && typed[5] == "📍 Aki → SITE: 3 marcas novas (de firefox) — #aaaaaa · #aaaaaa “first” · #000000 “by folder”."
+      + " Leia com `aki show 00000003 aaaaaaa1 aaaaaaa2` (abra a foto só se o pedido for visual), resolva e feche com `aki done 00000003 aaaaaaa1 aaaaaaa2`."
+      + " Se não forem para esta sessão, avise antes de mexer.",
+      "naming the session's marks not delivered yet, oldest first (one sent earlier left out, another session's too)")
+check(sent.prompt == typed.last.flatMap { _ in typed.count > 5 ? typed[5] : nil }, "the report keeps the message typed")
+let afterSend = await sentStore.list().annotations
+func deliveredAt(_ id: String) -> String? { afterSend.first { $0.id == id }?["delivered_at"]?.string }
+check(deliveredAt("aki_1791339895500_aaaaaaa1") == "2026-10-07T02:24:55Z" && deliveredAt("aki_1791339895500_aaaaaaa2") == "2026-10-07T02:24:55Z"
+      && deliveredAt("aki_1_00000003") == "2026-10-07T02:24:55Z", "each mark sent recorded as delivered (ISO 8601)")
+check(deliveredAt("aki_1_00000002") == nil && deliveredAt("aki_1_00000001") == "2026-01-01T00:00:01Z", "another session's mark untouched, an earlier delivery kept")
+
+let (heldHome, heldStore) = deliveryWorld("held")
+var askingSession = siteSession
+askingSession.state = .waiting
+let heldOrca = FakeOrca(tabs: siteTab)
+let held = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [askingSession], jpeg: jpegBytes, store: heldStore, home: heldHome,
+                                      orca: heldOrca, aki: "aki")
+check(held.outcome == .held("SITE is asking you something: the mark is saved and goes with your next send."), "asking something: held, with why")
+check(heldOrca.ran.isEmpty && held.saved.count == 1 && held.saved.first?["delivered_at"] == nil, "nothing typed, the mark saved and not delivered")
+
+let (noTabHome, noTabStore) = deliveryWorld("notab")
+let noTabOrca = FakeOrca(tabs: siteTab)
+let noTab = await LinuxMarking.deliver([firstMark, secondMark], to: "codex:42", sessions: [plainSession], jpeg: jpegBytes, store: noTabStore,
+                                       home: noTabHome, orca: noTabOrca, aki: "aki")
+check(noTab.outcome == .notTyped("Saved for api, not typed: it isn't in an Orca tab. Its agent finds them with `aki list`.") && noTabOrca.ran.isEmpty
+      && noTab.saved.count == 2, "no Orca handle: saved, not typed")
+let noOrca = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [siteSession], jpeg: jpegBytes, store: noTabStore,
+                                        home: noTabHome, orca: nil, aki: "aki")
+check(noOrca.outcome == .notTyped("Saved for SITE, not typed: orca-ide wasn't found."), "no orca-ide: saved, not typed")
+
+let (wrongTabHome, wrongTabStore) = deliveryWorld("wrongtab")
+let wrongTabOrca = FakeOrca(tabs: .exited(status: 0, output: Data(#"{"ok":true,"result":{"terminals":[{"handle":"term_1","worktreePath":"/elsewhere"}]}}"#.utf8)))
+let wrongTab = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [siteSession], jpeg: jpegBytes, store: wrongTabStore,
+                                          home: wrongTabHome, orca: wrongTabOrca, aki: "aki")
+check(wrongTab.outcome == .notTyped("Saved for SITE, not typed: Orca has no tab term_1 in its folder.") && wrongTabOrca.sends.isEmpty,
+      "a handle Orca lists in another folder: saved, not typed")
+let listTimeout = FakeOrca(tabs: .timedOut)
+let unlisted = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [siteSession], jpeg: jpegBytes, store: wrongTabStore,
+                                          home: wrongTabHome, orca: listTimeout, aki: "aki")
+check(unlisted.outcome == .notTyped("Saved for SITE, not typed: Orca didn't list its tabs.") && listTimeout.sends.isEmpty,
+      "Orca's list not answering: saved, not typed")
+
+let (zeroHome, zeroStore) = deliveryWorld("zero")
+let zero = await LinuxMarking.deliver([firstMark], to: nil, sessions: [], jpeg: jpegBytes, store: zeroStore, home: zeroHome, orca: FakeOrca(tabs: siteTab), aki: "aki")
+check(zero.outcome == .notSaved("No agent session to send to: nothing was saved.") && zero.failed == [firstMark.id], "zero sessions: nothing saved, why")
+let gone = await LinuxMarking.deliver([firstMark], to: "s9", sessions: [siteSession], jpeg: jpegBytes, store: zeroStore, home: zeroHome, orca: FakeOrca(tabs: siteTab), aki: "aki")
+check(gone.outcome == .notSaved("That session closed: choose another. Nothing was saved."), "the destination gone: nothing saved")
+let noJPEGOrca = FakeOrca(tabs: siteTab)
+let noJPEG = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [siteSession], jpeg: { _ in nil }, store: zeroStore, home: zeroHome, orca: noJPEGOrca, aki: "aki")
+check(noJPEG.outcome == .notSaved("The mark couldn't be saved: nothing was sent.") && noJPEGOrca.ran.isEmpty && noJPEG.failed == [firstMark.id],
+      "nothing saved: nothing typed")
+check(await zeroStore.list().annotations.isEmpty, "and the store stays empty")
+
+let (slowHome, slowStore) = deliveryWorld("slow")
+let slowOrca = FakeOrca(tabs: siteTab, send: .timedOut)
+let slow = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [siteSession], jpeg: jpegBytes, store: slowStore, home: slowHome, orca: slowOrca, aki: "aki")
+check(slow.outcome == .uncertain("Saved for SITE. Orca didn't answer in time: the message may have been typed, so it isn't sent again.")
+      && slowOrca.sends.count == 1, "a send with no answer in time: uncertain, never sent again")
+check(await slowStore.list().annotations.allSatisfy { $0["delivered_at"] == nil }, "and not recorded as delivered (the next send names it)")
+let refusedOrca = FakeOrca(tabs: siteTab, send: .exited(status: 0, output: Data(#"{"ok":false,"error":{"message":"no such terminal"}}"#.utf8)))
+let refused = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [siteSession], jpeg: jpegBytes, store: slowStore, home: slowHome, orca: refusedOrca, aki: "aki")
+check(refused.outcome == .typingFailed("Saved for SITE, but Orca didn't type the message.") && refusedOrca.sends.count == 1,
+      "ok:false with exit 0 is a failure")
+let crashedOrca = FakeOrca(tabs: siteTab, send: .exited(status: 1, output: Data()))
+let crashed = await LinuxMarking.deliver([firstMark], to: "s1", sessions: [siteSession], jpeg: jpegBytes, store: slowStore, home: slowHome, orca: crashedOrca, aki: "aki")
+check(crashed.outcome == .typingFailed("Saved for SITE, but Orca didn't type the message."), "so is a non-zero exit")
+check(await slowStore.list().annotations.allSatisfy { $0["delivered_at"] == nil }, "none of those recorded as delivered")
+
 print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
 exit(failures == 0 ? 0 : 1)
