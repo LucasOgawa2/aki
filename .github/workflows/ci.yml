@@ -37,3 +37,23 @@ jobs:
         run: swift build
       - name: Checks
         run: swift run AkiChecks
+  linux:
+    name: Build and checks (Linux)
+    # The core and the command line only: the app is macOS's.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Swift's official image, pinned to a digest so a moved tag can't change what runs here.
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checks ask lsof which address the server listens on; ps lists the agents.
+      - name: Tools
+        run: apt-get update && apt-get install -y --no-install-recommends lsof procps
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Checks
+        run: swift run AkiChecks
